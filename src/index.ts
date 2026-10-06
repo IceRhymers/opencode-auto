@@ -64,6 +64,17 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree }, option
     }
   }
 
+  /** Non-fatal TUI toast; no-op in headless `opencode run`. */
+  const toast = async (variant: "success" | "warning" | "error" | "info", message: string) => {
+    try {
+      await (client as unknown as {
+        tui?: { showToast?: (o: { body: { title: string; message: string; variant: string } }) => Promise<unknown> }
+      }).tui?.showToast?.({ body: { title: "auto-jev", message, variant } })
+    } catch {
+      // headless or TUI unavailable
+    }
+  }
+
   await log("info", "auto-jev initialized", {
     enabled: cfg.enabled,
     dryRun: cfg.dryRun,
@@ -129,11 +140,16 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree }, option
       // "ask" => stay silent; normal prompt shows
       if (!response) return
 
+      const label = String(p.metadata?.command ?? p.patterns?.[0] ?? p.permission)
       try {
         await client.postSessionIdPermissionsPermissionId({
           path: { id: p.sessionID, permissionID: p.id },
           body: { response },
         })
+        await toast(
+          response === "once" ? "success" : "error",
+          `${response === "once" ? "auto-allowed" : "auto-denied"}: ${label.slice(0, 60)}`,
+        )
       } catch (err) {
         await log("error", "permission reply failed", { error: String(err) })
       }
