@@ -24,7 +24,11 @@ export type Thresholds = {
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
-  safeConfidence: 0.85,
+  // Tuned against eval/corpus.ts via the live endpoint. safeConfidence 0.80
+  // recovers genuinely-safe read-only calls that sit at 0.75-0.84 confidence;
+  // dangerousConfidence stays strict at 0.90 because auto-deny must be
+  // conservative (uncertain dangerous degrades to ask for a human).
+  safeConfidence: 0.8,
   irreversibleMax: 0.3,
   intentMin: 0.6,
   dangerousConfidence: 0.9,
