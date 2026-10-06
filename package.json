@@ -1,0 +1,20 @@
+{
+  "name": "opencode-auto",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenCode plugin: auto mode powered by TypeSafe SystemOne (OpenJev) via Databricks AI Gateway",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "eval": "bun run eval/run.ts"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.6.0"
+  }
+}
