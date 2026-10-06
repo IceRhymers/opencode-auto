@@ -38,6 +38,16 @@ Only tool calls that would already ask for permission are classified. Your
 explicit `allow`/`deny` rules in `opencode.json` always take priority and run
 first.
 
+### Headless `opencode run`
+
+The plugin is built for the **TUI**, where the permission prompt waits for a
+human and the classifier's sub-second reply lands first and drives the tool.
+In headless `opencode run`, OpenCode rejects any unanswered permission after a
+short watchdog (~100ms). Static fast-path decisions (~2ms) still win that race,
+but model-path decisions (~450-550ms) do not — the call is auto-rejected and
+the agent adapts. That's the safe behavior; just don't rely on model-path
+auto-approvals in unattended runs.
+
 ## Install
 
 Load by file path in `opencode.json` (project `.opencode/opencode.json` or
