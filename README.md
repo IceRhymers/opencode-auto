@@ -50,20 +50,47 @@ auto-approvals in unattended runs.
 
 ## Install
 
-Load by file path in `opencode.json` (project `.opencode/opencode.json` or
-global `~/.config/opencode/opencode.json`):
+A [Justfile](https://github.com/casey/just) manages installation into two
+configs: normal OpenCode (`~/.config/opencode/opencode.json`) and the **ug**
+setup (`~/.ucode/opencode-xdg/opencode/opencode.json`). It edits the `plugin`
+array in place (preserving formatting/key order), backs up first, and is
+idempotent.
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///absolute/path/to/opencode-auto/src/index.ts"]
-}
+```sh
+just install-dry        # normal opencode, dry-run (log only — start here)
+just install-ug-dry     # ug setup, dry-run
+just install            # normal, live
+just install-ug         # ug, live
+just status             # show install state in both
+just uninstall[-ug]     # remove
 ```
+
+Dry-run mode logs every decision to `.opencode/auto-jev.log` without acting —
+watch it, then re-run `just install[-ug]` (no `-dry`) to go live.
 
 Authenticate once so the plugin can mint tokens:
 
 ```sh
 databricks auth login --host https://fevm-tanner-wendland.cloud.databricks.com --profile fevm-west
+```
+
+### Manual install
+
+If you prefer not to use `just`, add the plugin to the `plugin` array in
+`opencode.json` yourself:
+
+```json
+{
+  "plugin": ["file:///absolute/path/to/opencode-auto/src/index.ts"]
+}
+```
+
+or with options:
+
+```json
+{
+  "plugin": [["file:///path/to/opencode-auto/src/index.ts", { "dryRun": true }]]
+}
 ```
 
 ## Configuration
