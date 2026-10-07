@@ -126,6 +126,29 @@ function classifyKill(cmd: string): "killall" | "port" | "ordinary" | "none" {
   return "none"
 }
 
+/**
+ * True for a plain `git commit` (optionally with `git add` of workspace files
+ * before it in the same command). False when the command pushes, amends, or
+ * does anything beyond committing — those stay with the model/policy.
+ */
+export function isPlainGitCommit(cmd: string): boolean {
+  if (/\$\(|`/.test(cmd)) return false
+  const stages = splitStages(cmd)
+  if (!stages.some((s) => /^git\s+commit\b/.test(s))) return false
+  // no pipes: a piped commit is unusual enough to leave with the model
+  if (cmd.includes("|")) return false
+  return stages.every((s) => {
+    if (/^git\s+add\b/.test(s)) return true
+    if (/^git\s+commit\b/.test(s)) {
+      // history-rewriting or publishing flags disqualify
+      if (/--amend\b|\bpush\b/.test(s)) return false
+      return true
+    }
+    if (/^(git\s+(status|diff|log)|echo\b|true|false)\b/.test(s)) return true
+    return false
+  })
+}
+
 /** Commands that are always denied without consulting the model. */
 const HARD_DENY: RegExp[] = [
   /\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+"?~?\/?"\s*([;&|]|$)/, // rm -rf / or ~/
@@ -151,6 +174,29 @@ const TRIVIAL_ALLOW: RegExp[] = [
   /^(docker\s+(ps|logs|images)|kubectl\s+get)\b/,
   /^(node|deno|bun|python3?|pip3?|uv|ruby|go|rustc|cargo|java|javac)\s+(-v|--version|version)\s*$/,
 ]
+
+/** Dangerous capabilities inside a `python -c` snippet (checked as words). */
+const PY_DANGEROUS: RegExp[] = [
+  /\bopen\s*\(/, // any open() — could write
+  /\b(subprocess|os\.system|os\.popen|pty|socket|requests|urllib|shutil)\b/,
+  /\b(exec|eval|compile|__import__)\s*\(/,
+  /\bos\.(remove|unlink|rmdir|makedirs|mkdir|rename|replace|chmod|chown|remove|removedirs)\b/,
+  /\bpathlib\b[^;&]*\b(write_text|write_bytes|unlink|mkdir|rename)\b/,
+  /\b(sys\.argv|input)\s*\(/, // argv reference is fine, but input() blocks; keep conservative
+]
+
+/**
+ * True when a `python -c "<script>"` stage is confined to reading stdin and
+ * printing — the common "format this log/output" pipe-tail. Conservative:
+ * any write/exec/network/file-mutation token disqualifies it.
+ */
+export function pythonReadOnlySnippet(stage: string): boolean {
+  const m = stage.match(/^(?:python3?|python)\s+-c\s+(["'])([\s\S]*)\1\s*$/)
+  if (!m) return false
+  const script = m[2]
+  if (!script) return false
+  return !PY_DANGEROUS.some((re) => re.test(script))
+}
 
 function bashCommand(p: { permission: string; metadata?: Record<string, unknown> }): string {
   return typeof p.metadata?.command === "string" ? p.metadata.command.trim() : ""
@@ -180,17 +226,22 @@ function selfWrite(cmd: string, self?: SelfPaths): boolean {
   if (!isSelfTargeting(cmd, self)) return false
   if (/\$\(|`/.test(cmd)) return true // substitution may execute anything
   if (readOnlyChain(cmd)) return false
-  const stages = cmd
-    .split(/&&|\|\||;|\|/)
-    .map((s) => s.trim())
-    .filter(Boolean)
+  const stages = splitStages(cmd)
   // Leading-token write tools (a match must start the stage, so "grep ...
   // opencode.json" or "tail .../install.log" is not a write), in-place edit
-  // flags, and redirects.
+  // flags, and redirects. A python stage is a write only if it isn't a
+  // recognized read-only snippet (pythonReadOnlySnippet): python can do
+  // anything, so an unrecognized -c script targeting our files stays blocked.
   const LEAD_WRITE =
-    /^(sudo\s+)?(rm|mv|cp|chmod|chown|chgrp|touch|ln|mkdir|rmdir|tee|patch|truncate|shred|dd|install|rsync|scp|git|vim?|nvim|nano|emacs|code|open|python3?|uv|just|make|npm|pnpm|yarn|bun|deno)\b/
+    /^(sudo\s+)?(rm|mv|cp|chmod|chown|chgrp|touch|ln|mkdir|rmdir|tee|patch|truncate|shred|dd|install|rsync|scp|git|vim?|nvim|nano|emacs|code|open|uv|just|make|npm|pnpm|yarn|bun|deno)\b/
   const IN_PLACE = /\b(sed|perl|awk)\b[^|;&]*\s-i\b|\b(sed|perl)\b[^|;&]*\s-i\./
-  return stages.some((s) => LEAD_WRITE.test(s) || IN_PLACE.test(s) || /(^|\s)>>?\s*[^\s&|]/.test(s))
+  return stages.some(
+    (s) =>
+      LEAD_WRITE.test(s) ||
+      IN_PLACE.test(s) ||
+      /(^|\s)>>?\s*[^\s&|]/.test(s) ||
+      (/^(sudo\s+)?python3?\b/.test(s) && !pythonReadOnlySnippet(s)),
+  )
 }
 
 /**
@@ -203,12 +254,57 @@ function selfWrite(cmd: string, self?: SelfPaths): boolean {
  * only sets the location for the following stages, which are still
  * classified on their own.
  */
+/**
+ * Split a command into stages on &&, ||, ;, and | — but NOT inside single or
+ * double quotes. A python/node `-c "…;…"` script keeps its semicolons.
+ */
+export function splitStages(cmd: string): string[] {
+  const stages: string[] = []
+  let cur = ""
+  let quote: string | undefined
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i]
+    if (quote) {
+      cur += c
+      if (c === quote) quote = undefined
+      continue
+    }
+    if (c === '"' || c === "'") {
+      quote = c
+      cur += c
+      continue
+    }
+    if (c === "&" && cmd[i + 1] === "&") {
+      stages.push(cur)
+      cur = ""
+      i++
+      continue
+    }
+    if (c === "|" ) {
+      if (cmd[i + 1] === "|") {
+        stages.push(cur)
+        cur = ""
+        i++
+        continue
+      }
+      stages.push(cur)
+      cur = ""
+      continue
+    }
+    if (c === ";") {
+      stages.push(cur)
+      cur = ""
+      continue
+    }
+    cur += c
+  }
+  if (cur.trim()) stages.push(cur)
+  return stages.map((s) => s.trim()).filter(Boolean)
+}
+
 export function readOnlyChain(cmd: string): boolean {
   if (/\$\(|`/.test(cmd)) return false
-  const stages = cmd
-    .split(/&&|\|\||;|\|/)
-    .map((s) => s.trim())
-    .filter((s) => s && !/^(true|false)$/.test(s))
+  const stages = splitStages(cmd).filter((s) => !/^(true|false)$/.test(s))
   if (!stages.length) return false
   return stages.every((stage) => {
     // strip no-op redirections: 2>&1, N>/dev/null, &>/dev/null
@@ -225,6 +321,10 @@ export function readOnlyChain(cmd: string): boolean {
       if (/\s--?(url)\b/.test(s) === false && !/https?:\/\//.test(s)) return false
       return /^[\w\s:./?&=%@+~,'-]*$/.test(s)
     }
+    // python3 -c "…" used as a read-only formatter/parser at the end of a pipe.
+    // Only stdin/stdout/json/re/sys/os-path/textwrap/collections — any file-write,
+    // subprocess, network, or shell capability disqualifies it.
+    if (/^(python3?|python)\s+-c\s/.test(s)) return pythonReadOnlySnippet(s)
     return TRIVIAL_ALLOW.some((re) => re.test(s))
   })
 }
@@ -270,6 +370,16 @@ export function staticDecision(
   if (kill === "killall") return { action: interactive ? "ask" : "pause", reason: "kills every process with a given name" }
   if (kill === "port") return { action: interactive ? "ask" : "allow", reason: "frees a dev server by port" }
   if (kill === "ordinary") return { action: interactive ? "ask" : "pause", reason: "kills a process by id" }
+
+  // Local git commits are reversible (git reset) and central to dev work, so
+  // unattended mode lets them through. Only a plain commit: anything that
+  // publishes (push), rewrites history (--amend of pushed work), or stages
+  // outside the tree stays with the model. Interactive keeps the prompt.
+  if (isPlainGitCommit(cmd)) {
+    return interactive
+      ? { action: "ask", reason: "git commit; confirm" }
+      : { action: "allow", reason: "local git commit (reversible with git reset)" }
+  }
 
   // Writes/deletes aimed at obvious secret stores, shared refs, or user-level
   // system config are never model-decided.

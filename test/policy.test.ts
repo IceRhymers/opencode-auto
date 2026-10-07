@@ -108,6 +108,36 @@ describe("staticDecision", () => {
   test("git status && rm -rf / is still hard-denied", () => {
     expect(staticDecision(bash("git status && rm -rf /"))?.action).toBe("deny")
   })
+  test("read-only python -c pipe-tail is allowed, even over our own log", () => {
+    // the exact false-block from the field: formatting the audit log
+    expect(
+      staticDecision(
+        bash('tail -8 .opencode/auto-jev.log | python3 -c "import json,sys; [print(json.loads(l)[\'action\']) for l in sys.stdin]"'),
+        { self: SELF },
+      )?.action,
+    ).toBe("allow")
+    expect(staticDecision(bash('cat x.json | python3 -c "import json,sys; print(json.load(sys.stdin))"'))?.action).toBe("allow")
+    expect(staticDecision(bash('python3 -c "print(1+1)"'))?.action).toBe("allow")
+  })
+  test("python -c with write/exec/network capability is NOT static-allowed", () => {
+    // writes to a system path hit the hard-deny / sensitive rules first
+    expect(staticDecision(bash('python3 -c "open(\\"/etc/passwd\\",\\"w\\").write(\\"x\\")"'))?.action).toBe("deny")
+    // exec/subprocess in a plain workspace path falls through to the model (no static allow)
+    expect(staticDecision(bash('python3 -c "import subprocess; subprocess.run([\\"rm\\",\\"x\\"])"'))?.action).toBeUndefined()
+    expect(staticDecision(bash('python3 -c "import os; os.system(\\"ls\\")"'))?.action).toBeUndefined()
+    // and over our own files it stays blocked
+    expect(
+      staticDecision(bash('python3 -c "open(\\"/Users/x/projects/opencode-auto/src/policy.ts\\",\\"w\\")"'), { self: SELF })?.action,
+    ).toBe("block")
+  })
+  test("local git commit is allowed in unattended, asked interactively", () => {
+    expect(staticDecision(bash('git commit -m "wip"'))?.action).toBe("allow")
+    expect(staticDecision(bash('git add src/ && git commit -m "wip"'))?.action).toBe("allow")
+    expect(staticDecision(bash('git commit -m "wip"'), I)?.action).toBe("ask")
+    // push / amend stay with the model/policy
+    expect(staticDecision(bash("git commit -m x && git push"))?.action).not.toBe("allow")
+    expect(staticDecision(bash("git commit --amend --no-edit"))?.action).not.toBe("allow")
+  })
   test("self-protection guards writes only; reads of own files are allowed", () => {
     // reads: debugging the classifier requires reading its log/config/source
     expect(staticDecision(bash("cat ~/.config/opencode/opencode.json"), { self: SELF })?.action).toBe("allow")
