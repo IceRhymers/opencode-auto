@@ -85,6 +85,13 @@ describe("staticDecision", () => {
     expect(staticDecision(bash("cat package.json | grep version"))?.action).toBe("allow")
     expect(staticDecision(bash("tail -n 50 build.log; wc -l build.log"))?.action).toBe("allow")
   })
+  test("harmless redirects and cd stages stay on the read-only fast path", () => {
+    expect(staticDecision(bash("bun test 2>&1 | tail -20"))?.action).toBe("allow")
+    expect(staticDecision(bash("ls -la ~/.config/opencode/ 2>/dev/null"))?.action).toBe("allow")
+    expect(staticDecision(bash("ls node_modules >/dev/null 2>&1 && grep -o x node_modules/.package-lock.json | sort -u"))?.action).toBe("allow")
+    expect(staticDecision(bash("cd ~/.config/opencode && ls"))?.action).toBe("allow")
+    expect(staticDecision(bash("cd /tmp && git status"))?.action).toBe("allow")
+  })
   test("chains with a write or destructive stage are not static-allowed", () => {
     expect(staticDecision(bash("ls && npm install lodash"))?.action).toBeUndefined()
     expect(staticDecision(bash("cat a > b.txt"))?.action).toBeUndefined()
@@ -101,15 +108,28 @@ describe("staticDecision", () => {
   test("git status && rm -rf / is still hard-denied", () => {
     expect(staticDecision(bash("git status && rm -rf /"))?.action).toBe("deny")
   })
-  test("commands targeting the classifier itself are denied", () => {
-    expect(staticDecision(bash("cat ~/.config/opencode/opencode.json"), { self: SELF })?.action).toBe("deny")
-    expect(staticDecision(bash("ls /Users/x/projects/opencode-auto/src"), { self: SELF })?.action).toBe("deny")
-    expect(staticDecision(bash("cat /Users/x/projects/opencode-auto/Justfile"), { self: SELF })?.action).toBe("deny")
+  test("self-protection guards writes only; reads of own files are allowed", () => {
+    // reads: debugging the classifier requires reading its log/config/source
+    expect(staticDecision(bash("cat ~/.config/opencode/opencode.json"), { self: SELF })?.action).toBe("allow")
+    expect(staticDecision(bash("tail -80 .opencode/auto-jev.log"), { self: SELF })?.action).toBe("allow")
+    expect(staticDecision(bash("ls /Users/x/projects/opencode-auto/src"), { self: SELF })?.action).toBe("allow")
+    expect(staticDecision(bash("cat /Users/x/projects/opencode-auto/Justfile"), { self: SELF })?.action).toBe("allow")
+    expect(staticDecision(bash("cat /Users/x/projects/opencode-auto/src/policy.ts"), { self: SELF })?.action).toBe("allow")
     expect(staticDecision(bash("ls /Users/x/projects/opencode-auto"), { self: SELF })?.action).toBe("allow")
     expect(staticDecision(bash("git status"), { self: SELF })?.action).toBe("allow")
   })
+  test("writes to the classifier's own files are blocked with feedback", () => {
+    expect(staticDecision(bash("rm .opencode/auto-jev.log"), { self: SELF })?.action).toBe("block")
+    expect(staticDecision(bash("echo x >> ~/.config/opencode/opencode.json"), { self: SELF })?.action).toBe("block")
+    expect(staticDecision(bash("mv ~/.config/opencode/opencode.json /tmp/x"), { self: SELF })?.action).toBe("block")
+    expect(staticDecision(bash("sed -i s/a/b/ /Users/x/projects/opencode-auto/src/policy.ts"), { self: SELF })?.action).toBe("block")
+    expect(staticDecision(bash("cp /tmp/x ~/.config/opencode/opencode.json"), { self: SELF })?.action).toBe("block")
+    // writes ask interactively rather than block
+    expect(staticDecision(bash("rm .opencode/auto-jev.log"), { self: SELF, unattended: false })?.action).toBe("ask")
+  })
   test("self-protection without a self descriptor only guards well-known paths", () => {
-    expect(staticDecision(bash("cat ~/.config/opencode/opencode.json"))?.action).toBe("deny")
+    expect(staticDecision(bash("cat ~/.config/opencode/opencode.json"))?.action).toBe("allow")
+    expect(staticDecision(bash("echo x >> ~/.config/opencode/opencode.json"))?.action).toBe("block")
     expect(staticDecision(bash("cat src/policy.ts"))?.action).toBe("allow")
   })
   test("non-bash permissions are not static-decided", () => {
@@ -361,5 +381,22 @@ describe("decide (unattended)", () => {
     const d = decide({ verdict: choice("safe", 0.99) }, DEFAULT_THRESHOLDS, U)
     // irreversible defaults to 1 -> pause
     expect(d.action).toBe("pause")
+  })
+
+  test("read-only commands outside the workspace allow; writes pause", () => {
+    const answers = {
+      verdict: choice("safe", 0.95),
+      irreversible: noul(0.1),
+      matches_intent: noul(0.85),
+      exfiltration: noul(0.05),
+    }
+    const readCmd = { ...U, permission: "bash", metadata: { command: "ls -la ~/.config/opencode/ && cat ~/.config/opencode/tui.json" } }
+    expect(decide(answers, DEFAULT_THRESHOLDS, readCmd).action).toBe("allow")
+
+    const writeCmd = { ...U, permission: "bash", metadata: { command: "mkdir -p ~/.config/opencode/newdir" } }
+    expect(decide(answers, DEFAULT_THRESHOLDS, writeCmd).action).toBe("pause")
+
+    const extDir = { ...U, permission: "external_directory", metadata: {} }
+    expect(decide(answers, DEFAULT_THRESHOLDS, extDir).action).toBe("pause")
   })
 })

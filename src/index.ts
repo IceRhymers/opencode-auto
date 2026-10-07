@@ -38,6 +38,34 @@ type PermissionAsked = {
   tool?: { messageID?: string; callID?: string }
 }
 
+/**
+ * One tool call (e.g. a bash command touching $HOME) can raise two permission
+ * requests: "bash" and "external_directory". Classifying both doubles the
+ * prompt. We cache the decision for the bash half by tool callID and let the
+ * external_directory half inherit it. Short TTL: the pair arrives together.
+ */
+const PAIR_TTL_MS = 15_000
+const pairCache = new Map<string, { action: string; reason: string; t: number }>()
+function pairGet(callID: string | undefined) {
+  if (!callID) return undefined
+  const e = pairCache.get(callID)
+  if (!e) return undefined
+  if (Date.now() - e.t > PAIR_TTL_MS) {
+    pairCache.delete(callID)
+    return undefined
+  }
+  return e
+}
+function pairSet(callID: string | undefined, action: string, reason: string) {
+  if (!callID) return
+  pairCache.set(callID, { action, reason, t: Date.now() })
+  // opportunistic sweep so the map can't grow unbounded
+  if (pairCache.size > 200) {
+    const now = Date.now()
+    for (const [k, v] of pairCache) if (now - v.t > PAIR_TTL_MS) pairCache.delete(k)
+  }
+}
+
 export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUrl }, options) => {
   const cfg = resolveConfig(options)
   const unattended = cfg.mode_profile === "unattended"
@@ -153,12 +181,23 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUr
       if (!cfg.enabled) return
       const p = e.properties
 
-      const result = await classify({
-        sessionID: p.sessionID,
-        permission: p.permission,
-        patterns: p.patterns,
-        metadata: p.metadata,
-      })
+      // If the paired bash request for this same tool call was already
+      // decided, inherit it instead of re-classifying (avoids double prompts
+      // on external_directory + bash pairs).
+      const paired = pairGet(p.tool?.callID)
+      let result: Awaited<ReturnType<typeof classify>>
+      if (paired && p.permission === "external_directory") {
+        result = { action: paired.action, reason: `paired with bash decision: ${paired.reason}`, source: "static" } as Awaited<
+          ReturnType<typeof classify>
+        >
+      } else {
+        result = await classify({
+          sessionID: p.sessionID,
+          permission: p.permission,
+          patterns: p.patterns,
+          metadata: p.metadata,
+        })
+      }
 
       // Circuit breaker: in unattended mode a session that keeps getting
       // blocked escalates from block (redirect the agent) to pause (wait for
@@ -177,6 +216,10 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUr
         if (final.action === "allow") breaker.allow(p.sessionID)
         else if (final.action === "block") breaker.block(p.sessionID)
       }
+
+      // Record the bash decision so a paired external_directory request for
+      // the same tool call inherits it (see pairCache above).
+      if (p.permission === "bash") pairSet(p.tool?.callID, final.action, final.reason)
 
       await audit({
         permission: p.permission,
@@ -225,15 +268,22 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUr
       }
 
       if (final.action === "deny" && cfg.mode === "allow-ask-deny") {
-        try {
-          await client.postSessionIdPermissionsPermissionId({
-            path: { id: p.sessionID, permissionID: p.id },
-            body: { response: "reject" },
-          })
-          await toast("error", `auto-denied: ${label.slice(0, 60)}`)
-        } catch (err) {
-          await log("error", "permission reply failed", { error: String(err) })
+        // Send the reason so the agent sees "auto-jev denied: <why>" rather
+        // than a bare "user rejected". Prefer the v2 feedback channel; fall
+        // back to a plain v1 reject when the endpoint is unavailable.
+        const message = `auto-jev denied: ${final.reason}`
+        const ok = await rejectWithFeedback(p.sessionID, p.id, message)
+        if (!ok) {
+          try {
+            await client.postSessionIdPermissionsPermissionId({
+              path: { id: p.sessionID, permissionID: p.id },
+              body: { response: "reject" },
+            })
+          } catch (err) {
+            await log("error", "permission reply failed", { error: String(err) })
+          }
         }
+        await toast("error", `auto-denied: ${label.slice(0, 60)}`)
         return
       }
 

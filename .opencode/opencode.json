@@ -1,6 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///Users/tanner.wendland/projects/opencode-auto/src/index.ts"],
   "permission": {
     "*": "allow",
     "bash": "ask",

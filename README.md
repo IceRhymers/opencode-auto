@@ -82,9 +82,17 @@ just install-dry        # normal opencode, dry-run (log only — start here)
 just install-ug-dry     # ug setup, dry-run
 just install            # normal, live
 just install-ug         # ug, live
-just status             # show install state in both
-just uninstall[-ug]     # remove
+just status             # show install state in normal, ug, and project configs
+just uninstall[-ug]     # remove (also cleans this repo's project config)
+just uninstall-project  # remove from this repo's .opencode/opencode.json only
+just replay             # replay the audit log through the current rules
 ```
+
+The plugin can be registered in **three** places: the two global configs above
+and the project-local `./.opencode/opencode.json` in this repo. A global
+`uninstall` that leaves the project registration behind is why the plugin can
+"still load after restart" — `uninstall` now removes it from the named config
+**and** the project config. Use `just status` to see all three at once.
 
 Dry-run mode logs every decision to `.opencode/auto-jev.log` without acting —
 watch it, then re-run `just install[-ug]` (no `-dry`) to go live.

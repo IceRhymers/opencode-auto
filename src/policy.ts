@@ -35,6 +35,9 @@ export type Thresholds = {
   exfiltrationMax: number
 }
 
+/** The paths the classifier itself depends on. */
+export type SelfPaths = { worktree: string; logPath: string }
+
 export const DEFAULT_THRESHOLDS: Thresholds = {
   // Tuned against eval/corpus.ts via the live endpoint. safeConfidence 0.80
   // recovers genuinely-safe read-only calls that sit at 0.75-0.84 confidence;
@@ -149,22 +152,17 @@ const TRIVIAL_ALLOW: RegExp[] = [
   /^(node|deno|bun|python3?|pip3?|uv|ruby|go|rustc|cargo|java|javac)\s+(-v|--version|version)\s*$/,
 ]
 
-/** Commands allowed after a cheap self-protection check (see isSelfTargeting). */
-const SELF_GUARDED_ALLOW: RegExp[] = [
-  /^(git\s+(status|diff|log|show|branch|rev-parse|blame))\b/,
-  /^(ls|pwd|cat|head|tail|wc|rg|grep|find|sort|uniq)\b/,
-]
-
 function bashCommand(p: { permission: string; metadata?: Record<string, unknown> }): string {
   return typeof p.metadata?.command === "string" ? p.metadata.command.trim() : ""
 }
 
 /**
  * True when the command references the classifier's own project: its install
- * entry points, config home, source tree, or audit log. Such commands are
- * never static-allowed and never reach the model.
+ * entry points, config home, source tree, or audit log. READS of these are
+ * fine (debugging the classifier requires them); only WRITE-shaped commands
+ * are blocked (see selfWrite below).
  */
-export function isSelfTargeting(cmd: string, self?: { worktree: string; logPath: string }): boolean {
+export function isSelfTargeting(cmd: string, self?: SelfPaths): boolean {
   if (/~\/\.config\/opencode\/opencode\.jsonc?/.test(cmd)) return true
   if (/opencode-auto\/(src|Justfile|install\.py)/.test(cmd)) return true
   if (!self) return false
@@ -173,9 +171,37 @@ export function isSelfTargeting(cmd: string, self?: { worktree: string; logPath:
 }
 
 /**
+ * Write-shaped commands aimed at the classifier's own files: explicit writes
+ * (rm/mv/cp-into/chmod), in-place edits, redirects into the file, and running
+ * the installer (which mutates opencode.json). Read-only chains are never
+ * blocked by self-protection, even when they read the log or the config.
+ */
+function selfWrite(cmd: string, self?: SelfPaths): boolean {
+  if (!isSelfTargeting(cmd, self)) return false
+  if (/\$\(|`/.test(cmd)) return true // substitution may execute anything
+  if (readOnlyChain(cmd)) return false
+  const stages = cmd
+    .split(/&&|\|\||;|\|/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  // Leading-token write tools (a match must start the stage, so "grep ...
+  // opencode.json" or "tail .../install.log" is not a write), in-place edit
+  // flags, and redirects.
+  const LEAD_WRITE =
+    /^(sudo\s+)?(rm|mv|cp|chmod|chown|chgrp|touch|ln|mkdir|rmdir|tee|patch|truncate|shred|dd|install|rsync|scp|git|vim?|nvim|nano|emacs|code|open|python3?|uv|just|make|npm|pnpm|yarn|bun|deno)\b/
+  const IN_PLACE = /\b(sed|perl|awk)\b[^|;&]*\s-i\b|\b(sed|perl)\b[^|;&]*\s-i\./
+  return stages.some((s) => LEAD_WRITE.test(s) || IN_PLACE.test(s) || /(^|\s)>>?\s*[^\s&|]/.test(s))
+}
+
+/**
  * True when every pipeline/list stage in the command is individually
  * read-only. Command substitution ($(...) / `...`) is excluded: its contents
  * are executed and can't be statically classified as read-only.
+ *
+ * Harmless redirections (stderr merge, /dev/null sinks) are ignored; a
+ * redirect to a real file disqualifies. A `cd <path>` stage is allowed: it
+ * only sets the location for the following stages, which are still
+ * classified on their own.
  */
 export function readOnlyChain(cmd: string): boolean {
   if (/\$\(|`/.test(cmd)) return false
@@ -185,22 +211,28 @@ export function readOnlyChain(cmd: string): boolean {
     .filter((s) => s && !/^(true|false)$/.test(s))
   if (!stages.length) return false
   return stages.every((stage) => {
-    if (/[<>]/.test(stage)) return false // any redirection
-    if (/^(curl|wget)\b/.test(stage)) {
+    // strip no-op redirections: 2>&1, N>/dev/null, &>/dev/null
+    const s = stage
+      .replace(/\d*>&\d+/g, "")
+      .replace(/&?>>?\s*\/dev\/null\b/g, "")
+      .trim()
+    if (/[<>]/.test(s)) return false // any remaining redirection writes
+    if (/^cd\b/.test(s)) return true // pure location change; other stages are checked
+    if (/^(curl|wget)\b/.test(s)) {
       // only a plain GET: safe flags, a URL, no data/output/upload flags
-      if (/\s(-X|--request)\s*(POST|PUT|DELETE|PATCH)\b/i.test(stage)) return false
-      if (/\s(-d|--data|--data-binary|--data-raw|-T|--upload-file|-F|--form|-o|--output|-O|--remote-name)\b/.test(stage)) return false
-      if (/\s--?(url)\b/.test(stage) === false && !/https?:\/\//.test(stage)) return false
-      return /^[\w\s:./?&=%@+~,'-]*$/.test(stage)
+      if (/\s(-X|--request)\s*(POST|PUT|DELETE|PATCH)\b/i.test(s)) return false
+      if (/\s(-d|--data|--data-binary|--data-raw|-T|--upload-file|-F|--form|-o|--output|-O|--remote-name)\b/.test(s)) return false
+      if (/\s--?(url)\b/.test(s) === false && !/https?:\/\//.test(s)) return false
+      return /^[\w\s:./?&=%@+~,'-]*$/.test(s)
     }
-    return TRIVIAL_ALLOW.some((re) => re.test(stage))
+    return TRIVIAL_ALLOW.some((re) => re.test(s))
   })
 }
 
 /** Static rules short-circuit the model. Returns undefined when no rule hits. */
 export function staticDecision(
   p: { permission: string; metadata?: Record<string, unknown> },
-  opts?: { cwd?: string; self?: { worktree: string; logPath: string }; unattended?: boolean },
+  opts?: { cwd?: string; self?: SelfPaths; unattended?: boolean },
 ): Decision | undefined {
   if (p.permission !== "bash") return undefined
   const cmd = bashCommand(p)
@@ -208,11 +240,21 @@ export function staticDecision(
 
   const interactive = opts?.unattended === false
 
-  if (isSelfTargeting(cmd, opts?.self)) {
-    return { action: "deny", reason: "command modifies the classifier itself; configure opencode-auto directly" }
-  }
   for (const re of HARD_DENY) {
     if (re.test(cmd)) return { action: "deny", reason: `hard-deny rule: ${re.source}` }
+  }
+
+  // Self-protection blocks WRITES to the classifier's own files (config,
+  // source, audit log, installer). Reads fall through to the normal rules,
+  // so debugging the classifier (tail the log, grep the config) is allowed.
+  if (selfWrite(cmd, opts?.self)) {
+    return interactive
+      ? { action: "ask", reason: "writes to the classifier's own config/source/log; confirm" }
+      : {
+          action: "block",
+          reason:
+            "auto-jev blocked (writes to the classifier's own config/source/log); do not retry. Configure opencode-auto directly or ask the user.",
+        }
   }
 
   // env <cmd>: the command after env still runs; classify it too. An allow
@@ -229,8 +271,8 @@ export function staticDecision(
   if (kill === "port") return { action: interactive ? "ask" : "allow", reason: "frees a dev server by port" }
   if (kill === "ordinary") return { action: interactive ? "ask" : "pause", reason: "kills a process by id" }
 
-  // Writes/deletes aimed at files the classifier or the agent config depends
-  // on, or at obvious secret stores, are never model-decided.
+  // Writes/deletes aimed at obvious secret stores, shared refs, or user-level
+  // system config are never model-decided.
   if (/\bcp\b[^|;&]*~\/\.(aws|ssh|gnupg)/.test(cmd) || /\bcp\b[^|;&]*\.(pem|key|p12|pfx)\b/.test(cmd)) {
     return interactive
       ? { action: "ask", reason: "copies credentials; confirm" }
@@ -299,10 +341,13 @@ export function decide(
   const verdict = answers.verdict
   if (!verdict || verdict.type !== "choice") return { action: "ask", reason: "no verdict answer" }
 
-  // Outside-workspace reads/writes should not silently pass on a "safe"
-  // verdict the model gave without weighing the path. Escalate to pause.
+  // Outside-workspace paths deserve scrutiny only when the call can WRITE:
+  // read-only commands outside the workspace (ls/grep of a config dir) are
+  // already static-allowed above or pass here on a confident safe verdict.
+  // Writes outside the workspace pause so the user weighs the path.
   const pcmd = typeof opts?.metadata?.command === "string" ? opts.metadata.command : ""
   const touchesOutside = opts?.permission === "external_directory" || /(^|\s|["'(])~\//.test(pcmd)
+  const readOnly = pcmd ? readOnlyChain(pcmd) : false
   // System-wide package installs land outside the project and are
   // effectively irreversible (no agent undo): block with a redirect.
   const systemInstall = /\b(brew|apt(-get)?|dnf|yum|pacman)\s+(install|add)\b/.test(pcmd)
@@ -347,7 +392,7 @@ export function decide(
     }
     if (irrevBlock) return { action: "pause", reason: `uncertain but possibly irreversible (${describe})` }
     if (dangerous || verdict.choice === "needs_review") return { action: "pause", reason: `uncertain risk (${describe})` }
-    if (touchesOutside) return { action: "pause", reason: `touches paths outside the workspace (${describe})` }
+    if (touchesOutside && !readOnly) return { action: "pause", reason: `touches paths outside the workspace (${describe})` }
     // Allowing in an unattended run requires real confidence, not just the
     // absence of risk signals: a shrug ("safe", conf 0.3) still pauses.
     if (verdict.confidence < 0.6) return { action: "pause", reason: `low confidence (${describe})` }

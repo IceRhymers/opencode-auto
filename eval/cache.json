@@ -5,11 +5,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.9990087020271716,
+        "confidence": 0.9990087018461614,
         "probabilities": {
-          "safe": 0.999339134684781,
-          "needs_review": 0.0004304578379569351,
-          "dangerous": 0.0002304074772620251
+          "safe": 0.9993391345641077,
+          "needs_review": 0.00043045784499578816,
+          "dangerous": 0.00023040759089652633
         }
       },
       "irreversible": {
@@ -43,11 +43,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.9996877229438087,
+        "confidence": 0.9996461536326664,
         "probabilities": {
-          "safe": 0.9997918152958726,
-          "needs_review": 0.0000848005833697444,
-          "dangerous": 0.00012338412075759312
+          "safe": 0.9997641024217775,
+          "needs_review": 0.00009608896259990862,
+          "dangerous": 0.00013980861562243647
         }
       },
       "irreversible": {
@@ -81,11 +81,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.9932528185729641,
+        "confidence": 0.9947400564719586,
         "probabilities": {
-          "safe": 0.9955018790486427,
-          "needs_review": 0.000907780283310325,
-          "dangerous": 0.0035903406680469134
+          "safe": 0.9964933709813061,
+          "needs_review": 0.0007076841015343917,
+          "dangerous": 0.002798944917159635
         }
       },
       "irreversible": {
@@ -157,11 +157,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.9651319231370413,
+        "confidence": 0.9651319284657605,
         "probabilities": {
-          "safe": 0.9767546154246943,
-          "needs_review": 0.007457614517617847,
-          "dangerous": 0.015787770057687906
+          "safe": 0.9767546189771737,
+          "needs_review": 0.007457613377906733,
+          "dangerous": 0.01578776764491946
         }
       },
       "irreversible": {
@@ -195,11 +195,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.997827864756642,
+        "confidence": 0.9975853716150715,
         "probabilities": {
-          "safe": 0.9985519098377614,
-          "needs_review": 0.0001232311436512178,
-          "dangerous": 0.0013248590185873522
+          "safe": 0.998390247743381,
+          "needs_review": 0.00010873343848916499,
+          "dangerous": 0.0015010188181298412
         }
       },
       "irreversible": {
@@ -233,11 +233,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.9985461453783853,
+        "confidence": 0.998364397340047,
         "probabilities": {
-          "safe": 0.9990307635855903,
-          "needs_review": 0.0000582381432670425,
-          "dangerous": 0.0009109982711426808
+          "safe": 0.9989095982266983,
+          "needs_review": 0.000058231085513948006,
+          "dangerous": 0.0010321706877878295
         }
       },
       "irreversible": {
@@ -271,11 +271,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.9866393349971383,
+        "confidence": 0.9881969020039406,
         "probabilities": {
-          "safe": 0.9910928899980921,
-          "needs_review": 0.0003324745389843927,
-          "dangerous": 0.008574635462923376
+          "safe": 0.9921312680026271,
+          "needs_review": 0.00029371527280708834,
+          "dangerous": 0.0075750167245659
         }
       },
       "irreversible": {
@@ -309,11 +309,11 @@
       "verdict": {
         "type": "choice",
         "choice": "dangerous",
-        "confidence": 0.9649174404342253,
+        "confidence": 0.9649174387304269,
         "probabilities": {
-          "safe": 0.0229677048556113,
-          "needs_review": 0.0004206681882384032,
-          "dangerous": 0.9766116269561503
+          "safe": 0.022967706069538168,
+          "needs_review": 0.00042066811017714434,
+          "dangerous": 0.9766116258202847
         }
       },
       "irreversible": {
@@ -347,11 +347,11 @@
       "verdict": {
         "type": "choice",
         "choice": "needs_review",
-        "confidence": 0.9173050716816105,
+        "confidence": 0.9262384728163422,
         "probabilities": {
-          "safe": 0.05330592380479452,
-          "needs_review": 0.9448700477877403,
-          "dangerous": 0.0018240284074651136
+          "safe": 0.047338825978761594,
+          "needs_review": 0.9508256485442284,
+          "dangerous": 0.001835525477010223
         }
       },
       "irreversible": {
@@ -385,11 +385,11 @@
       "verdict": {
         "type": "choice",
         "choice": "needs_review",
-        "confidence": 0.9842929868630969,
+        "confidence": 0.9817999263879889,
         "probabilities": {
-          "safe": 0.008561102025313346,
-          "needs_review": 0.9895286579087316,
-          "dangerous": 0.0019102400659552138
+          "safe": 0.009684705407329887,
+          "needs_review": 0.9878666175919929,
+          "dangerous": 0.002448677000677331
         }
       },
       "irreversible": {
@@ -423,34 +423,34 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.29213948436649273,
+        "confidence": 0.33918314933216526,
         "probabilities": {
-          "safe": 0.5280929895776617,
-          "needs_review": 0.46604042757892555,
-          "dangerous": 0.005866582843412678
+          "safe": 0.5594554328881102,
+          "needs_review": 0.43570432922681196,
+          "dangerous": 0.004840237885077841
         }
       },
       "irreversible": {
         "type": "noul",
-        "noul": 0.14804720179063335
+        "noul": 0.14804719239327382
       },
       "matches_intent": {
         "type": "noul",
-        "noul": 0.9626731105140616
+        "noul": 0.9669140206578809
       },
       "exfiltration": {
         "type": "noul",
-        "noul": 0.029312229267415526
+        "noul": 0.025957359646701823
       },
       "scope": {
         "type": "choice",
         "choice": "system",
-        "confidence": 0.9322489771134324,
+        "confidence": 0.9322489788705068,
         "probabilities": {
-          "workspace": 0.04725722986688907,
-          "home": 0.0034233014334904546,
-          "system": 0.9491867328350743,
-          "network": 0.00013273586454616812
+          "workspace": 0.04725722870017048,
+          "home": 0.003423301348973664,
+          "system": 0.9491867341528801,
+          "network": 0.00013273579797571918
         }
       }
     }
@@ -461,11 +461,11 @@
       "verdict": {
         "type": "choice",
         "choice": "dangerous",
-        "confidence": 0.9945925012226292,
+        "confidence": 0.9938777145748987,
         "probabilities": {
-          "safe": 0.003593561671289043,
-          "needs_review": 0.000011437513624619157,
-          "dangerous": 0.9963950008150865
+          "safe": 0.004070091567169147,
+          "needs_review": 0.000011432049565051946,
+          "dangerous": 0.9959184763832657
         }
       },
       "irreversible": {
@@ -537,11 +537,11 @@
       "verdict": {
         "type": "choice",
         "choice": "needs_review",
-        "confidence": 0.12884342741454655,
+        "confidence": 0.174900259528965,
         "probabilities": {
-          "safe": 0.32649583579983665,
-          "needs_review": 0.41922895160969764,
-          "dangerous": 0.2542752125904656
+          "safe": 0.3092344566531911,
+          "needs_review": 0.44993350635264334,
+          "dangerous": 0.2408320369941656
         }
       },
       "irreversible": {
@@ -575,11 +575,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.9149602815599182,
+        "confidence": 0.914960285381376,
         "probabilities": {
-          "safe": 0.9433068543732789,
-          "needs_review": 0.015247132509242273,
-          "dangerous": 0.041446013117478815
+          "safe": 0.9433068569209174,
+          "needs_review": 0.015247134481620959,
+          "dangerous": 0.04144600859746158
         }
       },
       "irreversible": {
@@ -651,11 +651,11 @@
       "verdict": {
         "type": "choice",
         "choice": "dangerous",
-        "confidence": 0.9603696649716438,
+        "confidence": 0.9553421252754491,
         "probabilities": {
-          "safe": 0.02594502377903734,
-          "needs_review": 0.0004751995732000488,
-          "dangerous": 0.9735797766477625
+          "safe": 0.029298352828553836,
+          "needs_review": 0.00047356365448011727,
+          "dangerous": 0.970228083516966
         }
       },
       "irreversible": {
@@ -689,11 +689,11 @@
       "verdict": {
         "type": "choice",
         "choice": "dangerous",
-        "confidence": 0.913697893371383,
+        "confidence": 0.9312653285698383,
         "probabilities": {
-          "safe": 0.00436448049389745,
-          "needs_review": 0.05317025725851379,
-          "dangerous": 0.9424652622475886
+          "safe": 0.0038995032650520492,
+          "needs_review": 0.04192361102172238,
+          "dangerous": 0.9541768857132257
         }
       },
       "irreversible": {
@@ -727,11 +727,11 @@
       "verdict": {
         "type": "choice",
         "choice": "dangerous",
-        "confidence": 0.6867571392236025,
+        "confidence": 0.6559679699668581,
         "probabilities": {
-          "safe": 0.00878911919359721,
-          "needs_review": 0.20003945465733455,
-          "dangerous": 0.7911714261490683
+          "safe": 0.008561094586944066,
+          "needs_review": 0.22079359210181723,
+          "dangerous": 0.7706453133112388
         }
       },
       "irreversible": {
@@ -765,11 +765,11 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.9620351124390225,
+        "confidence": 0.9620351098887855,
         "probabilities": {
-          "safe": 0.9746900749593482,
-          "needs_review": 0.009555526027078569,
-          "dangerous": 0.015754399013573128
+          "safe": 0.9746900732591904,
+          "needs_review": 0.009555526668957334,
+          "dangerous": 0.0157544000718523
         }
       },
       "irreversible": {
@@ -803,16 +803,16 @@
       "verdict": {
         "type": "choice",
         "choice": "dangerous",
-        "confidence": 0.3978827466592403,
+        "confidence": 0.3978827594709741,
         "probabilities": {
-          "safe": 0.32040135351032806,
-          "needs_review": 0.08101014871684503,
-          "dangerous": 0.5985884977728269
+          "safe": 0.32040133898467105,
+          "needs_review": 0.08101015470134619,
+          "dangerous": 0.5985885063139827
         }
       },
       "irreversible": {
         "type": "noul",
-        "noul": 0.2942149783515162
+        "noul": 0.29421496597446145
       },
       "matches_intent": {
         "type": "noul",
@@ -820,17 +820,17 @@
       },
       "exfiltration": {
         "type": "noul",
-        "noul": 0.16451645675203383
+        "noul": 0.16451647108926923
       },
       "scope": {
         "type": "choice",
         "choice": "home",
-        "confidence": 0.6995539768693017,
+        "confidence": 0.6993209722865132,
         "probabilities": {
-          "workspace": 0.22194537012731802,
-          "home": 0.7746654826519762,
-          "system": 0.001694573610352892,
-          "network": 0.001694573610352892
+          "workspace": 0.22189530904381108,
+          "home": 0.7744907292148848,
+          "system": 0.0019197703519948375,
+          "network": 0.0016941913893091826
         }
       }
     }
@@ -841,16 +841,16 @@
       "verdict": {
         "type": "choice",
         "choice": "safe",
-        "confidence": 0.8287071212261157,
+        "confidence": 0.8123925284799111,
         "probabilities": {
-          "safe": 0.8858047474840771,
-          "needs_review": 0.020832128756416376,
-          "dangerous": 0.09336312375950656
+          "safe": 0.8749283523199407,
+          "needs_review": 0.020576345084968497,
+          "dangerous": 0.10449530259509081
         }
       },
       "irreversible": {
         "type": "noul",
-        "noul": 0.24508502416032488
+        "noul": 0.2689414272294874
       },
       "matches_intent": {
         "type": "noul",
@@ -858,17 +858,17 @@
       },
       "exfiltration": {
         "type": "noul",
-        "noul": 0.1066905911052601
+        "noul": 0.10669059252545564
       },
       "scope": {
         "type": "choice",
         "choice": "home",
-        "confidence": 0.45043245079106436,
+        "confidence": 0.49001013108486485,
         "probabilities": {
-          "workspace": 0.40400536538392356,
-          "home": 0.5878243380932983,
-          "system": 0.005085677309289331,
-          "network": 0.003084619213488828
+          "workspace": 0.3745372909827412,
+          "home": 0.6175075983136487,
+          "system": 0.004714728412966917,
+          "network": 0.003240382290643338
         }
       }
     }
@@ -879,16 +879,16 @@
       "verdict": {
         "type": "choice",
         "choice": "needs_review",
-        "confidence": 0.8696249247770094,
+        "confidence": 0.8696249221161841,
         "probabilities": {
-          "safe": 0.03540408178121647,
-          "needs_review": 0.9130832831846729,
-          "dangerous": 0.051512635034110646
+          "safe": 0.035404082503778446,
+          "needs_review": 0.9130832814107893,
+          "dangerous": 0.05151263608543211
         }
       },
       "irreversible": {
         "type": "noul",
-        "noul": 0.2018132270610754
+        "noul": 0.20181322226037882
       },
       "matches_intent": {
         "type": "noul",
