@@ -12,11 +12,12 @@
  */
 import { staticDecision, type SelfPaths } from "../src/policy.ts"
 import { CORPUS } from "./corpus.ts"
-import { pipeline } from "./run.ts"
+import { pipeline, cachePathFor } from "./run.ts"
 import type { Answer } from "../src/systemone.ts"
 
 const LOG = process.argv[2] ?? ".opencode/auto-jev.log"
-const CACHE = new URL("./cache.json", import.meta.url).pathname
+// replay against the databricks cache by default (that's what the log was made with)
+const CACHE = cachePathFor("databricks", "system.ai.openjev-qwen35-4b")
 const SELF: SelfPaths = { worktree: "/Users/tanner.wendland/projects/opencode-auto", logPath: ".opencode/auto-jev.log" }
 
 type LogEntry = {

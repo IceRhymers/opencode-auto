@@ -44,12 +44,39 @@ def remove_from(config_path: Path) -> str:
     return f"removed: {config_path} (backup: {backup.name})"
 
 
+def build_options(args) -> dict:
+    """Plugin options from the CLI flags (only those explicitly set)."""
+    opts = {}
+    if args.dry_run:
+        opts["dryRun"] = True
+    for flag, key in [
+        ("provider", "provider"),
+        ("profile", "profile"),
+        ("host", "host"),
+        ("url", "url"),
+        ("model", "model"),
+        ("api_key_env", "apiKeyEnv"),
+        ("run_profile", "runProfile"),
+    ]:
+        v = getattr(args, flag, None)
+        if v is not None:
+            opts[key] = v
+    return opts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("config", help="path to opencode.json")
     ap.add_argument("--entry", default=None, help="plugin array entry to add/remove")
     ap.add_argument("--dry-run", action="store_true", help="add with {dryRun: true} options")
     ap.add_argument("--remove", action="store_true", help="remove the plugin instead")
+    ap.add_argument("--provider", choices=["systemone", "databricks"], default=None)
+    ap.add_argument("--profile", default=None, help="databricks CLI profile")
+    ap.add_argument("--host", default=None, help="databricks workspace host")
+    ap.add_argument("--url", default=None, help="full SystemOne-compatible endpoint URL (overrides host/path)")
+    ap.add_argument("--model", default=None, help="classifier model name")
+    ap.add_argument("--api-key-env", default=None, help="env var holding the TypeSafe API key (default TYPESAFE_API_KEY)")
+    ap.add_argument("--run-profile", choices=["interactive", "unattended"], default=None)
     ap.add_argument(
         "--project-config",
         default=str(REPO / ".opencode" / "opencode.json"),
@@ -73,9 +100,11 @@ def main() -> int:
         print(f"error: config not found: {config_path}", file=sys.stderr)
         return 1
 
+    path_str = "file://" + str(REPO / "src" / "index.ts")
+    options = build_options(args)
     entry = args.entry
     if entry is None:
-        entry = ["file://" + str(REPO / "src" / "index.ts"), {"dryRun": True}] if args.dry_run else DEFAULT_ENTRY
+        entry = [path_str, options] if options else path_str
 
     data = json.loads(config_path.read_text())
     plugins = data.setdefault("plugin", [])
@@ -83,17 +112,29 @@ def main() -> int:
         print("error: 'plugin' is not an array", file=sys.stderr)
         return 1
 
-    already = any(is_ours(p) for p in plugins)
-    if already:
-        print(f"already installed in {config_path} (no change)")
-        return 0
-    plugins.append(entry)
-
     backup = config_path.with_suffix(config_path.suffix + f".bak-auto-jev-{time.strftime('%Y%m%dT%H%M%S')}")
+
+    # Replace in place when already installed so re-running updates options
+    # (e.g. adding --profile to an existing bare install) instead of no-oping.
+    for i, p in enumerate(plugins):
+        if is_ours(p):
+            if p == entry:
+                print(f"already installed in {config_path} (no change)")
+                return 0
+            shutil.copy2(config_path, backup)
+            plugins[i] = entry
+            config_path.write_text(json.dumps(data, indent=2) + "\n")
+            print(f"updated install in {config_path} (backup: {backup.name})")
+            print(f"  entry: {json.dumps(entry)}")
+            return 0
+
+    plugins.append(entry)
     shutil.copy2(config_path, backup)
     config_path.write_text(json.dumps(data, indent=2) + "\n")
     print(f"installed in {config_path}")
     print(f"backup: {backup}")
+    if options:
+        print(f"options: {json.dumps(options)}")
     if args.dry_run:
         print("dryRun: true — watch .opencode/auto-jev.log; re-run 'just install*' (no --dry-run) to go live")
     return 0

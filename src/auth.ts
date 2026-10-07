@@ -1,10 +1,16 @@
 /**
- * Databricks auth for the SystemOne endpoint.
+ * Token providers for the classifier backend.
  *
- * Mints a token via the Databricks CLI (`databricks auth token`), which
- * refreshes OAuth access tokens silently from its cached session. We cache the
- * token and refresh it before expiry. A browser login is attempted at most
- * once per process when no valid session exists.
+ * Three sources, picked by createAuth from the resolved backend config:
+ *   - apiKeyEnv:    read a TypeSafe API key from an env var (re-read every
+ *                   call, so rotating the key needs no restart)
+ *   - databricksToken: a token the user exported themselves (DATABRICKS_TOKEN)
+ *   - cliProfile:   mint via the Databricks CLI (`databricks auth token`),
+ *                   which refreshes OAuth access tokens silently from its
+ *                   cached session; a browser login is attempted at most once
+ *                   per process when no valid session exists
+ *
+ * All expose the same { warmup, token } shape the HTTP client expects.
  */
 import type { PluginInput } from "@opencode-ai/plugin"
 
@@ -15,9 +21,54 @@ const FALLBACK_TTL_MS = 50 * 60 * 1000
 
 type Cached = { token: string; expiresAt: number }
 
-export type AuthConfig = {
-  host: string
-  profile: string
+export type AuthSource =
+  | { kind: "apiKeyEnv"; envName: string }
+  | { kind: "databricksToken" }
+  | { kind: "cliProfile"; profile?: string; host?: string }
+
+export type Auth = {
+  /** human-readable source for logs, never contains the token */
+  describe: string
+  /** Warm the cache (optional; called at init). Never throws. */
+  warmup(): Promise<void>
+  token(): Promise<string>
+}
+
+/** TypeSafe API key (or any bearer token) held in an environment variable. */
+export function createApiKeyAuth(envName: string): Auth {
+  return {
+    describe: `env:${envName}`,
+    async warmup() {
+      // nothing to warm: the key is read per call below
+    },
+    async token() {
+      const key = process.env[envName]
+      if (!key) {
+        throw new Error(
+          `${envName} is not set. Export it (export ${envName}=...) or switch to the databricks provider ` +
+            "(host/profile options or DATABRICKS_* env).",
+        )
+      }
+      return key
+    },
+  }
+}
+
+/** A Databricks token the user supplied via DATABRICKS_TOKEN (PAT or OAuth). */
+export function createDatabricksTokenAuth(): Auth {
+  return {
+    describe: "env:DATABRICKS_TOKEN",
+    async warmup() {},
+    async token() {
+      const token = process.env.DATABRICKS_TOKEN
+      if (!token) {
+        throw new Error(
+          "DATABRICKS_TOKEN is not set (it was at startup?). Export it again or configure a CLI profile.",
+        )
+      }
+      return token
+    },
+  }
 }
 
 function jwtExpiryMs(token: string): number | undefined {
@@ -47,15 +98,20 @@ function parseToken(stdout: string): Cached {
   return { token, expiresAt }
 }
 
-export function createAuth(cfg: AuthConfig, $: BunShell) {
+/** OAuth token minted by the Databricks CLI from a profile's cached session. */
+export function createCliAuth(src: { profile?: string; host?: string }, $: BunShell): Auth {
+  const args: string[] = []
+  if (src.host) args.push("--host", src.host)
+  if (src.profile) args.push("--profile", src.profile)
+  const target = src.profile ? `profile ${src.profile}` : (src.host ?? "default profile")
+  const describe = src.profile ? `cli-profile:${src.profile}` : "cli-default"
+
   let cached: Cached | undefined
   let inflight: Promise<Cached> | undefined
   let loginAttempted = false
 
   async function runToken() {
-    const res = await $`databricks auth token --host ${cfg.host} --profile ${cfg.profile} --output json`
-      .quiet()
-      .nothrow()
+    const res = await $`databricks auth token ${{ raw: args.join(" ") }} --output json`.quiet().nothrow()
     return {
       ok: res.exitCode === 0,
       stdout: res.stdout.toString(),
@@ -67,19 +123,19 @@ export function createAuth(cfg: AuthConfig, $: BunShell) {
     let res = await runToken()
     if (!res.ok && !loginAttempted) {
       loginAttempted = true
-      await $`databricks auth login --host ${cfg.host} --profile ${cfg.profile}`.quiet().nothrow()
+      await $`databricks auth login ${{ raw: args.join(" ") }}`.quiet().nothrow()
       res = await runToken()
     }
     if (!res.ok) {
       throw new Error(
-        `databricks auth token failed. Run: databricks auth login --host ${cfg.host} --profile ${cfg.profile}\n${res.stderr}`,
+        `databricks auth token failed for ${target}. Run: databricks auth login ${args.join(" ")}\n${res.stderr}`,
       )
     }
     return parseToken(res.stdout)
   }
 
   return {
-    /** Warm the cache (optional; called at init). Never throws. */
+    describe,
     async warmup() {
       try {
         await this.token()
@@ -100,4 +156,13 @@ export function createAuth(cfg: AuthConfig, $: BunShell) {
   }
 }
 
-export type Auth = ReturnType<typeof createAuth>
+export function createAuth(source: AuthSource, $: BunShell): Auth {
+  switch (source.kind) {
+    case "apiKeyEnv":
+      return createApiKeyAuth(source.envName)
+    case "databricksToken":
+      return createDatabricksTokenAuth()
+    case "cliProfile":
+      return createCliAuth(source, $)
+  }
+}

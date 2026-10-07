@@ -1,6 +1,6 @@
 /**
- * opencode-auto — auto mode powered by TypeSafe SystemOne (OpenJev) via
- * Databricks AI Gateway.
+ * opencode-auto — auto mode powered by a SystemOne-compatible classifier
+ * (native TypeSafe SystemOne, or OpenJev via a Databricks AI Gateway).
  *
  * Only permission requests ("permission.asked" events) are classified. Explicit
  * allow/deny rules in the user's opencode.json still apply first and are never
@@ -19,11 +19,13 @@
  * Blocks use the v2 /permission/{requestID}/reply endpoint, which carries a
  * `message` the agent sees (PermissionV1.CorrectedError) and therefore keeps
  * the loop going. Falls back to the v1 reply when the endpoint is missing.
+ *
+ * When no backend can be configured the plugin stays inactive and leaves the
+ * user's permissions untouched (it does not escalate to "ask").
  */
 import type { Plugin } from "@opencode-ai/plugin"
 import { resolveConfig } from "./config.js"
-import { createAuth } from "./auth.js"
-import { createSystemOne } from "./systemone.js"
+import { createBackend, type Backend } from "./backend.js"
 import { createClassifier } from "./classifier.js"
 import { createBreaker } from "./breaker.js"
 import { recentUserMessages } from "./context.js"
@@ -82,18 +84,40 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUr
     }
   }
 
-  const auth = createAuth({ host: cfg.host, profile: cfg.profile }, $)
-  const systemone = createSystemOne(
-    { host: cfg.host, model: cfg.model, timeoutMs: cfg.timeoutMs },
-    () => auth.token(),
-  )
-  const classify = createClassifier({
-    systemone,
-    config: cfg,
-    getUserMessages: (sessionID) =>
-      recentUserMessages(client as never, sessionID, cfg.contextMessages),
-    worktree,
-  })
+  /** Non-fatal TUI toast; no-op in headless `opencode run`. */
+  const toast = async (variant: "success" | "warning" | "error" | "info", message: string) => {
+    try {
+      await (client as unknown as {
+        tui?: { showToast?: (o: { body: { title: string; message: string; variant: string } }) => Promise<unknown> }
+      }).tui?.showToast?.({ body: { title: "auto-jev", message, variant } })
+    } catch {
+      // headless or TUI unavailable
+    }
+  }
+
+  // Resolve the classifier backend (native SystemOne or databricks). When it
+  // can't be configured the plugin disables itself cleanly — it does NOT
+  // escalate tools to "ask", so the user isn't trapped behind prompts.
+  let backend: Backend | undefined
+  let backendErr: string | undefined = cfg.unconfigured
+  if (cfg.backend) {
+    try {
+      backend = await createBackend(cfg.backend, $)
+    } catch (e) {
+      backendErr = e instanceof Error ? e.message : String(e)
+    }
+  }
+  const active = cfg.enabled && backend !== undefined
+
+  const classify = backend
+    ? createClassifier({
+        systemone: backend.client,
+        config: cfg,
+        getUserMessages: (sessionID) =>
+          recentUserMessages(client as never, sessionID, cfg.contextMessages),
+        worktree,
+      })
+    : undefined
   const breaker = createBreaker({
     consecutiveBlocks: cfg.maxConsecutiveBlocks,
     maxBlocksPerSession: cfg.maxBlocksPerSession,
@@ -109,27 +133,21 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUr
     }
   }
 
-  /** Non-fatal TUI toast; no-op in headless `opencode run`. */
-  const toast = async (variant: "success" | "warning" | "error" | "info", message: string) => {
-    try {
-      await (client as unknown as {
-        tui?: { showToast?: (o: { body: { title: string; message: string; variant: string } }) => Promise<unknown> }
-      }).tui?.showToast?.({ body: { title: "auto-jev", message, variant } })
-    } catch {
-      // headless or TUI unavailable
-    }
-  }
-
   await log("info", "auto-jev initialized", {
     enabled: cfg.enabled,
+    active,
     dryRun: cfg.dryRun,
     runProfile: cfg.mode_profile,
     mode: cfg.mode,
-    model: cfg.model,
-    host: cfg.host,
-    profile: cfg.profile,
+    ...(backend
+      ? { provider: backend.provider, url: backend.url, model: backend.model, auth: backend.auth.describe }
+      : { unconfigured: backendErr }),
   })
-  if (cfg.enabled) await auth.warmup()
+  if (backendErr) {
+    await log("warn", "auto-jev backend not configured; plugin inactive", { reason: backendErr })
+    await toast("warning", `auto-jev inactive: ${backendErr.slice(0, 120)}`)
+  }
+  if (active && backend) await backend.auth.warmup()
 
   /**
    * Reject with feedback via the v2 endpoint so the agent reads the reason and
@@ -160,7 +178,7 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUr
 
   return {
     config: async (input) => {
-      if (!cfg.enabled) return
+      if (!active) return // unconfigured/disabled: leave permissions untouched
       const perm = (input as { permission?: unknown }).permission
       // Escalate chosen tools to "ask" so the classifier sees them. Never touch
       // explicit "deny" rules, and never loosen anything already stricter.
@@ -178,7 +196,7 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUr
     event: async ({ event }) => {
       const e = event as unknown as { type: string; properties?: PermissionAsked }
       if (e.type !== "permission.asked" || !e.properties) return
-      if (!cfg.enabled) return
+      if (!active || !classify) return
       const p = e.properties
 
       // If the paired bash request for this same tool call was already

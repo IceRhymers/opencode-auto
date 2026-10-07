@@ -138,6 +138,19 @@ describe("staticDecision", () => {
     expect(staticDecision(bash("git commit -m x && git push"))?.action).not.toBe("allow")
     expect(staticDecision(bash("git commit --amend --no-edit"))?.action).not.toBe("allow")
   })
+  test("printing a live credential is blocked, even when read-only", () => {
+    expect(staticDecision(bash("databricks auth token --profile x --output json"))?.action).toBe("block")
+    expect(staticDecision(bash("printenv DATABRICKS_TOKEN"))?.action).toBe("block")
+    expect(staticDecision(bash("echo $TYPESAFE_API_KEY"))?.action).toBe("block")
+    expect(staticDecision(bash("echo ${DATABRICKS_TOKEN}"))?.action).toBe("block")
+    expect(staticDecision(bash("env | grep TOKEN"))?.action).toBe("block")
+    expect(staticDecision(bash("databricks auth token --profile x --output json"), I)?.action).toBe("ask")
+    // but legitimate non-secret commands still allow
+    expect(staticDecision(bash("env | grep PATH"))?.action).toBe("allow")
+    expect(staticDecision(bash("databricks auth login --profile x"))?.action).toBeUndefined()
+    expect(staticDecision(bash("echo done"))?.action).toBe("allow")
+    expect(staticDecision(bash("git status"))?.action).toBe("allow")
+  })
   test("self-protection guards writes only; reads of own files are allowed", () => {
     // reads: debugging the classifier requires reading its log/config/source
     expect(staticDecision(bash("cat ~/.config/opencode/opencode.json"), { self: SELF })?.action).toBe("allow")

@@ -74,6 +74,21 @@ const SECRET_READ: RegExp[] = [
   /\bid_(rsa|ed25519|ecdsa|dsa)\b/,
 ]
 
+/**
+ * Commands that expose a live credential to the agent's context. Even when
+ * "read-only" (no file write), printing a token lets a compromised or
+ * careless agent exfiltrate it, so these are never static-allowed. The
+ * classifier itself mints tokens out-of-process; the agent never needs to.
+ */
+const CREDENTIAL_EXFIL: RegExp[] = [
+  /\bdatabricks\s+auth\s+token\b/,
+  /\b(printenv|env|set|export|declare)\b[^|;&]*\b[A-Z0-9_]*(TOKEN|API_KEY|SECRET|PASSWORD|CREDENTIALS)[A-Z0-9_]*\b/,
+  /\b(echo|printf|cat|xargs|read)\b[^|;&]*\$\{?[A-Z0-9_]*(TOKEN|API_KEY|SECRET|PASSWORD)[A-Z0-9_]*\}?/,
+  /\$\((?:printenv|cat)\b[^)]*\b[A-Z0-9_]*(TOKEN|API_KEY|SECRET|PASSWORD)[A-Z0-9_]*\b/,
+  // env | grep TOKEN (and friends): a filter stage hunting for a secret name
+  /\b(printenv|env|set)\b[^|]*\|[^|]*\b(grep|egrep|fgrep|rg|awk|sed)\b[^|;&]*\b[A-Z0-9_]*(TOKEN|API_KEY|SECRET|PASSWORD|CREDENTIAL)/,
+]
+
 /** Where a destructive command lands. */
 type Target = "root" | "sensitive" | "external" | "workspace"
 
@@ -370,6 +385,15 @@ export function staticDecision(
   if (kill === "killall") return { action: interactive ? "ask" : "pause", reason: "kills every process with a given name" }
   if (kill === "port") return { action: interactive ? "ask" : "allow", reason: "frees a dev server by port" }
   if (kill === "ordinary") return { action: interactive ? "ask" : "pause", reason: "kills a process by id" }
+
+  // Printing a live token/secret into the agent's context is exposure even
+  // when nothing is written to disk. Block it before any allow path; the
+  // classifier mints its own tokens out-of-process.
+  if (CREDENTIAL_EXFIL.some((re) => re.test(cmd))) {
+    return interactive
+      ? { action: "ask", reason: "prints a live credential into the agent context; confirm exposure" }
+      : { action: "block", reason: "auto-jev blocked (prints a live credential); do not retry. The agent never needs raw tokens in context." }
+  }
 
   // Local git commits are reversible (git reset) and central to dev work, so
   // unattended mode lets them through. Only a plain commit: anything that

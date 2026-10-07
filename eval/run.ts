@@ -5,39 +5,64 @@
  *   - no "block"-expected case is ever allowed (dangerous must not run)
  *   - no "deny"/"block" case silently allowed via static rules
  *
- * Answers from the live endpoint are cached to eval/cache.json so tuning can
- * re-run offline (bun run eval/run.ts --cached) and sweep.ts can grid-search.
+ * The backend is the same createBackend the plugin uses, so --provider /
+ * --model / url overrides and auth resolution match production. Answers from
+ * the live endpoint are cached per provider+model to eval/cache-<key>.json so
+ * tuning can re-run offline (--cached) and sweep.ts can grid-search.
  *
  * Usage: bun run eval/run.ts [--verbose] [--cached] [--write-cache]
+ *        [--provider systemone|databricks] [--model <name>] [--url <url>]
+ *        [--profile <p>] [--host <h>]
  */
-import { createSystemOne } from "../src/systemone.ts"
+import { resolveBackend } from "../src/config.ts"
+import { createBackend } from "../src/backend.ts"
 import { buildState } from "../src/state.ts"
 import { decide, staticDecision, DEFAULT_THRESHOLDS, type Decision } from "../src/policy.ts"
 import { QUESTIONS } from "../src/questions.ts"
 import { CORPUS, type Case } from "./corpus.ts"
 import type { Answer } from "../src/systemone.ts"
 
-const HOST = process.env.DATABRICKS_HOST ?? "https://fevm-tanner-wendland.cloud.databricks.com"
-const PROFILE = process.env.DATABRICKS_CONFIG_PROFILE ?? "fevm-west"
-const MODEL = "system.ai.openjev-qwen35-4b"
-const CACHE = new URL("./cache.json", import.meta.url).pathname
-
+const arg = (name: string): string | undefined => {
+  const i = process.argv.indexOf(`--${name}`)
+  return i >= 0 ? process.argv[i + 1] : undefined
+}
 const VERBOSE = process.argv.includes("--verbose")
 const USE_CACHED = process.argv.includes("--cached")
 const WRITE_CACHE = process.argv.includes("--write-cache") || !USE_CACHED
 
-async function getToken(): Promise<string> {
-  const proc = Bun.spawn(["databricks", "auth", "token", "--host", HOST, "--profile", PROFILE, "--output", "json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const out = await new Response(proc.stdout).text()
-  const data = JSON.parse(out)
-  if (!data.access_token) throw new Error("no access_token; run databricks auth login")
-  return data.access_token
+// Options shape mirrors the plugin's [name, options]; env is real process.env.
+const OPTS: Record<string, unknown> = {
+  ...(arg("provider") ? { provider: arg("provider") } : {}),
+  ...(arg("model") ? { model: arg("model") } : {}),
+  ...(arg("url") ? { url: arg("url") } : {}),
+  ...(arg("profile") ? { profile: arg("profile") } : {}),
+  ...(arg("host") ? { host: arg("host") } : {}),
 }
 
+const { backend: BACKEND_CFG, unconfigured } = resolveBackend(OPTS, process.env)
+const MODEL = BACKEND_CFG?.model ?? "unknown"
+const PROVIDER = BACKEND_CFG?.provider ?? "unknown"
+
+/** cache file for a provider+model pair, so different backends don't collide */
+export function cachePathFor(provider: string, model: string): string {
+  const key = `${provider}-${model.replace(/[^a-zA-Z0-9.-]/g, "_")}`
+  return new URL(`./cache-${key}.json`, import.meta.url).pathname
+}
+const CACHE = cachePathFor(PROVIDER, MODEL)
+
 type CacheEntry = { name: string; answers: Record<string, Answer> }
+
+// Lazily-created shared backend (one auth warm-up for the whole run).
+let _client: Awaited<ReturnType<typeof createBackend>>["client"] | undefined
+async function client() {
+  if (_client) return _client
+  if (!BACKEND_CFG) throw new Error(unconfigured ?? "no backend")
+  const $ = (await import("bun")).$
+  const backend = await createBackend(BACKEND_CFG, $ as never)
+  console.log(`backend: ${backend.provider} url=${backend.url} model=${backend.model} auth=${backend.auth.describe}`)
+  _client = backend.client
+  return _client
+}
 
 export async function answersFor(c: Case): Promise<{ answers?: Record<string, Answer>; err?: string }> {
   const state = buildState(
@@ -45,9 +70,8 @@ export async function answersFor(c: Case): Promise<{ answers?: Record<string, An
     [c.goal],
     "/repo",
   )
-  const systemone = createSystemOne({ host: HOST, model: MODEL, timeoutMs: 8000, maxRetries: 1 }, getToken)
   try {
-    const res = await systemone.ask(state, QUESTIONS)
+    const res = await (await client()).ask(state, QUESTIONS)
     return { answers: res.answers }
   } catch (e) {
     return { err: String(e) }

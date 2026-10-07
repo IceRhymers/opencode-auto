@@ -2,12 +2,14 @@
 #
 #   just install            # normal opencode (~/.config/opencode), live
 #   just install-ug         # ug setup (~/.ucode/opencode-xdg/opencode), live
+#   just install-ug --profile fevm-west   # install with backend options
 #   just install-dry        # normal, dry-run mode (log only, no action)
 #   just install-ug-dry     # ug, dry-run mode
 #   just uninstall          # remove from normal (+ this repo's project config)
 #   just uninstall-ug       # remove from ug (+ this repo's project config)
 #   just uninstall-project  # remove from this repo's .opencode/opencode.json only
 #   just status             # show install state in all three configs
+#   just whoami [--profile X|--provider P|--url U]  # show+probe the backend
 #   just test / just eval / just eval-sweep / just replay
 
 NORMAL_CONFIG := env_var('HOME') / ".config/opencode/opencode.json"
@@ -18,18 +20,25 @@ default:
     @just --list
 
 # --- install (live) ---
-install:
-    python3 install.py "{{NORMAL_CONFIG}}"
+# extra args pass through to install.py, e.g.:
+#   just install --profile fevm-west
+#   just install-ug --provider systemone        (uses TYPESAFE_API_KEY)
+install *ARGS:
+    python3 install.py "{{NORMAL_CONFIG}}" {{ARGS}}
 
-install-ug:
-    python3 install.py "{{UG_CONFIG}}"
+install-ug *ARGS:
+    python3 install.py "{{UG_CONFIG}}" {{ARGS}}
 
 # --- install (dry-run: log decisions, don't act) ---
-install-dry:
-    python3 install.py "{{NORMAL_CONFIG}}" --dry-run
+install-dry *ARGS:
+    python3 install.py "{{NORMAL_CONFIG}}" --dry-run {{ARGS}}
 
-install-ug-dry:
-    python3 install.py "{{UG_CONFIG}}" --dry-run
+install-ug-dry *ARGS:
+    python3 install.py "{{UG_CONFIG}}" --dry-run {{ARGS}}
+
+# print the resolved backend (provider/url/model/auth) + probe it
+whoami *ARGS:
+    bun run src/whoami.ts {{ARGS}}
 
 # --- uninstall ---
 # uninstall also cleans the project config so the plugin stops loading in this

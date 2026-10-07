@@ -1,14 +1,14 @@
 /**
- * Minimal typed client for the TypeSafe SystemOne endpoint served through a
- * Databricks AI Gateway path. No SDK dependency — one fetch with a timeout and
- * bounded retries on 429/529.
+ * Minimal typed client for a SystemOne-compatible endpoint (native TypeSafe
+ * SystemOne, or a Databricks AI Gateway path). No SDK dependency — one fetch
+ * with a timeout and bounded retries on 429/529.
  */
 import type { Question } from "./questions.js"
 
 export type SystemOneConfig = {
-  host: string
+  /** full endpoint URL, e.g. https://api.typesafe.ai/v1/systemone */
+  url: string
   model: string
-  path?: string
   timeoutMs?: number
   maxRetries?: number
 }
@@ -31,8 +31,7 @@ export type SystemOneResponse = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export function createSystemOne(cfg: SystemOneConfig, getToken: () => Promise<string>) {
-  const path = cfg.path ?? "/ai-gateway/typesafe/v1/systemone"
-  const url = cfg.host.replace(/\/$/, "") + path
+  const url = cfg.url
   const timeoutMs = cfg.timeoutMs ?? 3000
   const maxRetries = cfg.maxRetries ?? 2
 

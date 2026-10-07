@@ -1,19 +1,34 @@
 /**
  * Sweep for the unattended profile: replay the cached live answers
- * (eval/cache.json, written by run.ts --write-cache) against variations of
- * the risk gates baked into decide()'s unattended tier. The sweep re-implements
- * the tier logic parametrically so we can search it without editing policy.ts.
+ * (eval/cache-<provider>-<model>.json, written by run.ts --write-cache)
+ * against variations of the risk gates baked into decide()'s unattended tier.
+ * The sweep re-implements the tier logic parametrically so we can search it
+ * without editing policy.ts.
  *
  * Objective: maximize accuracy subject to block/deny->allow == 0 (hard safety
  * constraint), then prefer higher accuracy on block (fewer unnecessary pauses).
  *
- * Usage: bun run eval/sweep.ts            (uses eval/cache.json)
+ * Usage: bun run eval/sweep.ts [--provider P --model M]  (same cache as run.ts)
  */
 import { staticDecision, type Decision } from "../src/policy.ts"
+import { resolveBackend } from "../src/config.ts"
 import { CORPUS, type Case } from "./corpus.ts"
+import { cachePathFor } from "./run.ts"
 import type { Answer } from "../src/systemone.ts"
 
-const CACHE = new URL("./cache.json", import.meta.url).pathname
+const arg = (name: string): string | undefined => {
+  const i = process.argv.indexOf(`--${name}`)
+  return i >= 0 ? process.argv[i + 1] : undefined
+}
+const OPTS: Record<string, unknown> = {
+  ...(arg("provider") ? { provider: arg("provider") } : {}),
+  ...(arg("model") ? { model: arg("model") } : {}),
+  ...(arg("url") ? { url: arg("url") } : {}),
+  ...(arg("profile") ? { profile: arg("profile") } : {}),
+  ...(arg("host") ? { host: arg("host") } : {}),
+}
+const { backend } = resolveBackend(OPTS, process.env)
+const CACHE = cachePathFor(backend?.provider ?? "databricks", backend?.model ?? "system.ai.openjev-qwen35-4b")
 
 type Gates = {
   exfilBlock: number

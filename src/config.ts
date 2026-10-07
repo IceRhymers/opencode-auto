@@ -1,13 +1,50 @@
 /**
- * Plugin configuration, resolved from env vars and plugin options (opencode.json
- * `[name, options]`). Env vars win so a developer can point at a different
- * gateway without editing config.
+ * Plugin configuration, resolved from plugin options (opencode.json
+ * `[name, options]`) and env vars. Explicit options win over env so a stray
+ * shell var can't hijack a deliberate install.
+ *
+ * The classifier backend is bring-your-own:
+ *   - "systemone": the native TypeSafe SystemOne API
+ *     (https://api.typesafe.ai/v1/systemone), authenticated with an API key
+ *     from an env var (default TYPESAFE_API_KEY).
+ *   - "databricks": a Databricks AI Gateway path
+ *     (https://<host>/ai-gateway/typesafe/v1/systemone), authenticated with a
+ *     Databricks token (DATABRICKS_TOKEN or an OAuth CLI profile).
+ * `url` overrides the endpoint outright for any SystemOne-compatible server.
  */
 import { DEFAULT_THRESHOLDS, type Thresholds } from "./policy.js"
 
 export type Profile = "interactive" | "unattended"
 
 export type Mode = "allow-ask-deny" | "allow-ask" | "allow-deny"
+
+export type Provider = "systemone" | "databricks"
+
+export const DEFAULT_URLS: Record<Provider, string> = {
+  systemone: "https://api.typesafe.ai/v1/systemone",
+  databricks: "/ai-gateway/typesafe/v1/systemone", // joined to the host
+}
+
+export const DEFAULT_MODELS: Record<Provider, string> = {
+  systemone: "jev-latest",
+  databricks: "system.ai.openjev-qwen35-4b",
+}
+
+export type BackendConfig =
+  | {
+      provider: "systemone"
+      url: string
+      model: string
+      /** env var holding the TypeSafe API key (the key itself never enters config) */
+      apiKeyEnv: string
+    }
+  | {
+      provider: "databricks"
+      url: string
+      model: string
+      host?: string
+      profile?: string
+    }
 
 export type Config = {
   enabled: boolean
@@ -16,9 +53,9 @@ export type Config = {
    *  unless risky; block+redirect clear danger; pause the run when uncertain. */
   mode_profile: Profile
   mode: Mode
-  host: string
-  profile: string
-  model: string
+  backend?: BackendConfig
+  /** why there is no backend (set when backend is undefined) */
+  unconfigured?: string
   contextMessages: number
   timeoutMs: number
   thresholds: Thresholds
@@ -36,21 +73,93 @@ const num = (v: unknown, d: number) => {
 }
 const bool = (v: unknown, d: boolean) => (v === undefined ? d : v === true || v === "true" || v === "1")
 
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined
+}
+
+export function detectProvider(
+  opts: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+): Provider | undefined {
+  const explicit = str(opts.provider ?? env.AUTO_JEV_PROVIDER)
+  if (explicit === "systemone" || explicit === "databricks") return explicit
+
+  // Explicit install-time options are the strongest signal: a profile or host
+  // baked into opencode.json means "this install uses databricks", even if the
+  // shell happens to export a TypeSafe key.
+  if (str(opts.profile) || str(opts.host)) return "databricks"
+
+  const apiKeyEnv = str(opts.apiKeyEnv) ?? "TYPESAFE_API_KEY"
+  if (str(env[apiKeyEnv])) return "systemone"
+  if (str(env.DATABRICKS_TOKEN) || str(env.DATABRICKS_HOST) || str(env.DATABRICKS_CONFIG_PROFILE)) {
+    return "databricks"
+  }
+  return undefined
+}
+
+export function resolveBackend(
+  opts: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+): { backend: BackendConfig; unconfigured?: undefined } | { backend?: undefined; unconfigured: string } {
+  const provider = detectProvider(opts, env)
+  const urlOverride = str(opts.url ?? env.AUTO_JEV_URL)
+  const modelOpt = str(opts.model ?? env.AUTO_JEV_MODEL)
+  const apiKeyEnv = str(opts.apiKeyEnv) ?? "TYPESAFE_API_KEY"
+
+  if (!provider) {
+    return {
+      unconfigured:
+        "no classifier backend configured: export TYPESAFE_API_KEY (native SystemOne) or set a databricks " +
+        "profile/host (options or DATABRICKS_* env)",
+    }
+  }
+
+  if (provider === "systemone") {
+    if (urlOverride) return { backend: { provider, url: urlOverride, model: modelOpt ?? DEFAULT_MODELS.systemone, apiKeyEnv } }
+    return {
+      backend: { provider, url: DEFAULT_URLS.systemone, model: modelOpt ?? DEFAULT_MODELS.systemone, apiKeyEnv },
+    }
+  }
+
+  // databricks
+  const host = str(opts.host ?? env.DATABRICKS_HOST)
+  const profile = str(opts.profile ?? env.DATABRICKS_CONFIG_PROFILE)
+  const model = modelOpt ?? DEFAULT_MODELS.databricks
+  if (urlOverride) {
+    return { backend: { provider, url: urlOverride, model, host, profile } }
+  }
+  if (host) {
+    return { backend: { provider, url: host.replace(/\/+$/, "") + DEFAULT_URLS.databricks, model, host, profile } }
+  }
+  // Host resolved later from the CLI profile (backend.resolveDatabricksHost).
+  if (profile) {
+    return { backend: { provider, url: "", model, profile } }
+  }
+  if (str(env.DATABRICKS_TOKEN)) {
+    return {
+      unconfigured:
+        "DATABRICKS_TOKEN is set but no host: also export DATABRICKS_HOST or set the host/url plugin options",
+    }
+  }
+  return {
+    unconfigured:
+      "databricks provider needs a host or profile: set the host/profile plugin options, " +
+      "DATABRICKS_HOST, or DATABRICKS_CONFIG_PROFILE",
+  }
+}
+
 export function resolveConfig(opts: Record<string, unknown> = {}): Config {
   const env = process.env
   const t = (opts.thresholds ?? {}) as Partial<Thresholds>
   const runProfile = (env.AUTO_JEV_PROFILE ?? opts.runProfile) as Profile | undefined
+  const { backend, unconfigured } = resolveBackend(opts, env)
   return {
     enabled: bool(opts.enabled ?? env.AUTO_JEV_ENABLED, true),
     dryRun: bool(opts.dryRun ?? env.AUTO_JEV_DRY_RUN, false),
     mode_profile: runProfile === "interactive" ? "interactive" : "unattended",
     mode: (opts.mode as Mode) ?? "allow-ask-deny",
-    host:
-      env.DATABRICKS_HOST ??
-      (opts.host as string) ??
-      "https://fevm-tanner-wendland.cloud.databricks.com",
-    profile: env.DATABRICKS_CONFIG_PROFILE ?? (opts.profile as string) ?? "fevm-west",
-    model: (opts.model as string) ?? "system.ai.openjev-qwen35-4b",
+    backend,
+    unconfigured,
     contextMessages: num(opts.contextMessages, 3),
     timeoutMs: num(opts.timeoutMs, 3000),
     thresholds: {
