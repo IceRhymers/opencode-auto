@@ -5,11 +5,16 @@
  */
 import { DEFAULT_THRESHOLDS, type Thresholds } from "./policy.js"
 
+export type Profile = "interactive" | "unattended"
+
 export type Mode = "allow-ask-deny" | "allow-ask" | "allow-deny"
 
 export type Config = {
   enabled: boolean
   dryRun: boolean
+  /** interactive: allow/ask/deny against the TUI prompt. unattended: allow
+   *  unless risky; block+redirect clear danger; pause the run when uncertain. */
+  mode_profile: Profile
   mode: Mode
   host: string
   profile: string
@@ -20,6 +25,9 @@ export type Config = {
   /** permissions to escalate to "ask" so the classifier sees them */
   escalate: string[]
   logPath: string
+  /** circuit breaker (unattended profile) */
+  maxConsecutiveBlocks: number
+  maxBlocksPerSession: number
 }
 
 const num = (v: unknown, d: number) => {
@@ -31,9 +39,11 @@ const bool = (v: unknown, d: boolean) => (v === undefined ? d : v === true || v 
 export function resolveConfig(opts: Record<string, unknown> = {}): Config {
   const env = process.env
   const t = (opts.thresholds ?? {}) as Partial<Thresholds>
+  const runProfile = (env.AUTO_JEV_PROFILE ?? opts.runProfile) as Profile | undefined
   return {
     enabled: bool(opts.enabled ?? env.AUTO_JEV_ENABLED, true),
     dryRun: bool(opts.dryRun ?? env.AUTO_JEV_DRY_RUN, false),
+    mode_profile: runProfile === "interactive" ? "interactive" : "unattended",
     mode: (opts.mode as Mode) ?? "allow-ask-deny",
     host:
       env.DATABRICKS_HOST ??
@@ -54,5 +64,7 @@ export function resolveConfig(opts: Record<string, unknown> = {}): Config {
       ? (opts.escalate as string[])
       : ["bash", "edit", "webfetch", "external_directory"],
     logPath: (opts.logPath as string) ?? ".opencode/auto-jev.log",
+    maxConsecutiveBlocks: num(opts.maxConsecutiveBlocks, 2),
+    maxBlocksPerSession: num(opts.maxBlocksPerSession, 4),
   }
 }

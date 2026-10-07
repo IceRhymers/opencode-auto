@@ -11,11 +11,29 @@ const choice = (c: string, confidence: number, probabilities: Record<string, num
 const noul = (n: number): Answer => ({ type: "noul", noul: n })
 
 const bash = (command: string) => ({ permission: "bash", metadata: { command } })
+const I = { unattended: false } // interactive static tiers
+const SELF = { worktree: "/Users/x/projects/opencode-auto", logPath: ".opencode/auto-jev.log" }
 
 describe("staticDecision", () => {
-  test("hard-deny: rm -rf ~/", () => {
+  test("hard-deny: rm -rf ~/ in all flag/quoting forms", () => {
     expect(staticDecision(bash("rm -rf ~/"))?.action).toBe("deny")
     expect(staticDecision(bash("rm -rf /"))?.action).toBe("deny")
+    expect(staticDecision(bash("rm -Rf ~"))?.action).toBe("deny")
+    expect(staticDecision(bash("rm -r -f /"))?.action).toBe("deny")
+    expect(staticDecision(bash("rm --recursive --force /"))?.action).toBe("deny")
+    expect(staticDecision(bash("rm --recursive --force ~"))?.action).toBe("deny")
+    expect(staticDecision(bash("rm -rf '/'"))?.action).toBe("deny")
+    expect(staticDecision(bash('rm -rf "$HOME"'))?.action).toBe("deny")
+    expect(staticDecision(bash("rm -rf ${HOME}"))?.action).toBe("deny")
+    expect(staticDecision(bash("rm -rf /*"))?.action).toBe("deny")
+    expect(staticDecision(bash("rm -rf / && ls"))?.action).toBe("deny")
+  })
+  test("credential moves, publishes, and user-config edits are blocked", () => {
+    expect(staticDecision(bash("cp ~/.aws/credentials /tmp/x"))?.action).toBe("block")
+    expect(staticDecision(bash("npm publish"))?.action).toBe("block")
+    expect(staticDecision(bash("git push --delete origin main"))?.action).toBe("block")
+    expect(staticDecision(bash("git update-ref -d refs/heads/main"))?.action).toBe("block")
+    expect(staticDecision(bash("crontab -r"))?.action).toBe("block")
   })
   test("hard-deny: force push", () => {
     expect(staticDecision(bash("git push origin main --force"))?.action).toBe("deny")
@@ -25,16 +43,74 @@ describe("staticDecision", () => {
     expect(staticDecision(bash(":(){ :|:& };:"))?.action).toBe("deny")
     expect(staticDecision(bash("sudo shutdown -h now"))?.action).toBe("deny")
   })
+  test("destructive in-workspace: rm -rf of any kind pauses (asks interactively)", () => {
+    expect(staticDecision(bash("rm -rf ./dist"))?.action).toBe("pause")
+    expect(staticDecision(bash("rm -rf ./dist"), I)?.action).toBe("ask")
+    expect(staticDecision(bash("rm -rf ./build"))?.action).toBe("pause")
+    expect(staticDecision(bash("git reset --hard HEAD~10"))?.action).toBe("pause")
+    expect(staticDecision(bash("git reset --hard HEAD~10"), I)?.action).toBe("ask")
+    expect(staticDecision(bash("git branch -D feature"))?.action).toBe("pause")
+    expect(staticDecision(bash("git branch --delete old"))?.action).toBe("pause")
+    expect(staticDecision(bash("rm -rf node_modules"))?.action).toBe("pause")
+  })
+  test("git branch -D is not hard-denied (was a false deny)", () => {
+    expect(staticDecision(bash("git branch -D feature"))?.action).not.toBe("deny")
+  })
+  test("destructive against sensitive/external paths pauses (asks interactively)", () => {
+    expect(staticDecision(bash("rm -rf ~/other-project"))?.action).toBe("pause")
+    expect(staticDecision(bash("rm -rf ~/other-project"), I)?.action).toBe("ask")
+    expect(staticDecision(bash("rm -rf /tmp/old-repo"))?.action).toBe("pause")
+    expect(staticDecision(bash("sudo rm -rf ./dist"))?.action).toBe("pause")
+  })
+  test("destructiveness does not match 'env <cmd>' false positives", () => {
+    // env rm -rf ./src: the inner command is destructive and must still pause
+    expect(staticDecision(bash("env rm -rf ./src"))?.action).toBe("pause")
+    // plain read-only after env unwraps
+    expect(staticDecision(bash("env ls -la"))?.action).toBe("allow")
+  })
+  test("blanket process kills pause; port kills allow unattended", () => {
+    expect(staticDecision(bash("killall -9 node"))?.action).toBe("pause")
+    expect(staticDecision(bash("killall -9 node"), I)?.action).toBe("ask")
+    expect(staticDecision(bash("kill -9 $(lsof -ti:3000)"))?.action).toBe("allow")
+    expect(staticDecision(bash("kill -9 $(lsof -ti:3000)"), I)?.action).toBe("ask")
+  })
   test("trivial-allow: read-only git", () => {
     expect(staticDecision(bash("git status"))?.action).toBe("allow")
     expect(staticDecision(bash("git diff --stat"))?.action).toBe("allow")
     expect(staticDecision(bash("ls -la"))?.action).toBe("allow")
     expect(staticDecision(bash("bun test"))?.action).toBe("allow")
   })
-  test("trivial-allow skipped for compound commands", () => {
-    expect(staticDecision(bash("git status && rm -rf /"))?.action).toBe("deny") // hard-deny wins
-    expect(staticDecision(bash("ls | xargs rm"))?.action).toBeUndefined()
+  test("read-only compound chains are allowed", () => {
+    expect(staticDecision(bash("ls -la src && git status"))?.action).toBe("allow")
+    expect(staticDecision(bash("cat package.json | grep version"))?.action).toBe("allow")
+    expect(staticDecision(bash("tail -n 50 build.log; wc -l build.log"))?.action).toBe("allow")
+  })
+  test("chains with a write or destructive stage are not static-allowed", () => {
+    expect(staticDecision(bash("ls && npm install lodash"))?.action).toBeUndefined()
+    expect(staticDecision(bash("cat a > b.txt"))?.action).toBeUndefined()
+    expect(staticDecision(bash("ls; rm -rf ./src"))?.action).toBe("pause")
     expect(staticDecision(bash("cat $(rm x)"))?.action).toBeUndefined()
+    expect(staticDecision(bash("ls | xargs rm"))?.action).toBeUndefined()
+  })
+  test("secret reads are blocked even though they are read-only", () => {
+    expect(staticDecision(bash("cat ~/.aws/credentials"))?.action).toBe("block")
+    expect(staticDecision(bash("cat ~/.ssh/id_rsa"))?.action).toBe("block")
+    expect(staticDecision(bash("cat .env"))?.action).toBe("block")
+    expect(staticDecision(bash("find ~ -name '*.pem'"))?.action).toBe("block")
+  })
+  test("git status && rm -rf / is still hard-denied", () => {
+    expect(staticDecision(bash("git status && rm -rf /"))?.action).toBe("deny")
+  })
+  test("commands targeting the classifier itself are denied", () => {
+    expect(staticDecision(bash("cat ~/.config/opencode/opencode.json"), { self: SELF })?.action).toBe("deny")
+    expect(staticDecision(bash("ls /Users/x/projects/opencode-auto/src"), { self: SELF })?.action).toBe("deny")
+    expect(staticDecision(bash("cat /Users/x/projects/opencode-auto/Justfile"), { self: SELF })?.action).toBe("deny")
+    expect(staticDecision(bash("ls /Users/x/projects/opencode-auto"), { self: SELF })?.action).toBe("allow")
+    expect(staticDecision(bash("git status"), { self: SELF })?.action).toBe("allow")
+  })
+  test("self-protection without a self descriptor only guards well-known paths", () => {
+    expect(staticDecision(bash("cat ~/.config/opencode/opencode.json"))?.action).toBe("deny")
+    expect(staticDecision(bash("cat src/policy.ts"))?.action).toBe("allow")
   })
   test("non-bash permissions are not static-decided", () => {
     expect(staticDecision({ permission: "edit", metadata: {} })).toBeUndefined()
@@ -129,5 +205,161 @@ describe("decide", () => {
       exfiltration: noul(0.0),
     })
     expect(belowSafe.action).toBe("ask")
+  })
+})
+
+describe("decide (unattended)", () => {
+  const U = { unattended: true }
+
+  test("confident safe allows regardless of intent", () => {
+    const d = decide(
+      {
+        verdict: choice("safe", 0.99),
+        irreversible: noul(0.0),
+        matches_intent: noul(0.35),
+        exfiltration: noul(0.05),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("allow")
+  })
+
+  test("confident dangerous blocks with redirect feedback", () => {
+    const d = decide(
+      {
+        verdict: choice("dangerous", 0.97),
+        irreversible: noul(0.9),
+        matches_intent: noul(0.1),
+        exfiltration: noul(0.1),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("block")
+    expect(d.reason).toMatch(/do not retry/i)
+  })
+
+  test("moderate-confidence dangerous blocks when risk signals agree", () => {
+    const d = decide(
+      {
+        verdict: choice("dangerous", 0.7),
+        irreversible: noul(0.78),
+        matches_intent: noul(0.59),
+        exfiltration: noul(0.05),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("block")
+  })
+
+  test("dangerous verdict with wildly mismatched intent blocks (prompt injection guard)", () => {
+    const d = decide(
+      {
+        verdict: choice("dangerous", 0.41),
+        irreversible: noul(0.38),
+        matches_intent: noul(0.11),
+        exfiltration: noul(0.15),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("block")
+  })
+
+  test("dangerous without corroborating risk pauses for the user", () => {
+    const d = decide(
+      {
+        verdict: choice("dangerous", 0.6),
+        irreversible: noul(0.03),
+        matches_intent: noul(0.68),
+        exfiltration: noul(0.03),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("pause")
+  })
+
+  test("needs_review with high irreversibility and low intent blocks", () => {
+    const d = decide(
+      {
+        verdict: choice("needs_review", 0.9),
+        irreversible: noul(0.78),
+        matches_intent: noul(0.3),
+        exfiltration: noul(0.04),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("block")
+  })
+
+  test("needs_review with high irreversibility but strong intent pauses (commit/push shaped)", () => {
+    const d = decide(
+      {
+        verdict: choice("needs_review", 0.99),
+        irreversible: noul(0.56),
+        matches_intent: noul(0.88),
+        exfiltration: noul(0.15),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("pause")
+  })
+
+  test("needs_review without high risk pauses", () => {
+    const d = decide(
+      {
+        verdict: choice("needs_review", 0.9),
+        irreversible: noul(0.2),
+        matches_intent: noul(0.9),
+        exfiltration: noul(0.04),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("pause")
+  })
+
+  test("exfiltration alone blocks even when verdict is safe", () => {
+    const d = decide(
+      {
+        verdict: choice("safe", 0.9),
+        irreversible: noul(0.0),
+        matches_intent: noul(0.9),
+        exfiltration: noul(0.8),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("block")
+  })
+
+  test("high irreversibility with safe verdict pauses, does not block", () => {
+    const d = decide(
+      {
+        verdict: choice("safe", 0.95),
+        irreversible: noul(0.8),
+        matches_intent: noul(0.9),
+        exfiltration: noul(0.0),
+      },
+      DEFAULT_THRESHOLDS,
+      U,
+    )
+    expect(d.action).toBe("pause")
+  })
+
+  test("missing verdict answer pauses (not ask) in unattended mode", () => {
+    const d = decide({}, DEFAULT_THRESHOLDS, U)
+    expect(d.action).toBe("ask")
+  })
+
+  test("classifier error with partial answers defaults to pause via missing nouls", () => {
+    const d = decide({ verdict: choice("safe", 0.99) }, DEFAULT_THRESHOLDS, U)
+    // irreversible defaults to 1 -> pause
+    expect(d.action).toBe("pause")
   })
 })

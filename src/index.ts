@@ -5,15 +5,27 @@
  * Only permission requests ("permission.asked" events) are classified. Explicit
  * allow/deny rules in the user's opencode.json still apply first and are never
  * seen by this plugin. The `config` hook escalates bash/edit/webfetch/
- * external_directory to "ask" so the classifier actually gets traffic. Each
- * permission.asked is classified and the plugin replies "once"/"reject" via the
- * v1 permission API, or stays silent to leave the normal TUI prompt in place.
+ * external_directory to "ask" so the classifier actually gets traffic.
+ *
+ * Two profiles:
+ *   interactive (default) — allow/ask/deny. Anything uncertain stays at the
+ *     normal TUI prompt.
+ *   unattended — for long runs with nobody at the keyboard. Non-risky calls
+ *     go through; clear-cut danger is rejected with feedback so the agent can
+ *     redirect to a safer approach; uncertain-risky calls pause the run at the
+ *     prompt until the user returns. A per-session circuit breaker escalates
+ *     block -> pause when the agent keeps insisting.
+ *
+ * Blocks use the v2 /permission/{requestID}/reply endpoint, which carries a
+ * `message` the agent sees (PermissionV1.CorrectedError) and therefore keeps
+ * the loop going. Falls back to the v1 reply when the endpoint is missing.
  */
 import type { Plugin } from "@opencode-ai/plugin"
 import { resolveConfig } from "./config.js"
 import { createAuth } from "./auth.js"
 import { createSystemOne } from "./systemone.js"
 import { createClassifier } from "./classifier.js"
+import { createBreaker } from "./breaker.js"
 import { recentUserMessages } from "./context.js"
 
 type PermissionAsked = {
@@ -26,8 +38,9 @@ type PermissionAsked = {
   tool?: { messageID?: string; callID?: string }
 }
 
-export const AutoJev: Plugin = async ({ client, $, directory, worktree }, options) => {
+export const AutoJev: Plugin = async ({ client, $, directory, worktree, serverUrl }, options) => {
   const cfg = resolveConfig(options)
+  const unattended = cfg.mode_profile === "unattended"
 
   const log = async (
     level: "debug" | "info" | "warn" | "error",
@@ -52,6 +65,10 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree }, option
     getUserMessages: (sessionID) =>
       recentUserMessages(client as never, sessionID, cfg.contextMessages),
     worktree,
+  })
+  const breaker = createBreaker({
+    consecutiveBlocks: cfg.maxConsecutiveBlocks,
+    maxBlocksPerSession: cfg.maxBlocksPerSession,
   })
 
   const audit = async (line: Record<string, unknown>) => {
@@ -78,12 +95,40 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree }, option
   await log("info", "auto-jev initialized", {
     enabled: cfg.enabled,
     dryRun: cfg.dryRun,
+    runProfile: cfg.mode_profile,
     mode: cfg.mode,
     model: cfg.model,
     host: cfg.host,
     profile: cfg.profile,
   })
   if (cfg.enabled) await auth.warmup()
+
+  /**
+   * Reject with feedback via the v2 endpoint so the agent reads the reason and
+   * redirects (loop continues). Returns false when the endpoint is unavailable
+   * so the caller can fall back to the v1 reply (loop stops).
+   */
+  const rejectWithFeedback = async (sessionID: string, permissionID: string, message: string): Promise<boolean> => {
+    if (!serverUrl) return false
+    try {
+      const res = await fetch(new URL(`/permission/${encodeURIComponent(permissionID)}/reply`, serverUrl), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-opencode-directory": encodeURIComponent(directory),
+        },
+        body: JSON.stringify({ reply: "reject", message }),
+      })
+      if (!res.ok) {
+        await log("warn", "v2 permission reply failed", { status: res.status })
+        return false
+      }
+      return true
+    } catch (err) {
+      await log("warn", "v2 permission reply error", { error: String(err) })
+      return false
+    }
+  }
 
   return {
     config: async (input) => {
@@ -115,44 +160,85 @@ export const AutoJev: Plugin = async ({ client, $, directory, worktree }, option
         metadata: p.metadata,
       })
 
+      // Circuit breaker: in unattended mode a session that keeps getting
+      // blocked escalates from block (redirect the agent) to pause (wait for
+      // the human). Allows reset the consecutive counter.
+      let final = result
+      if (unattended) {
+        if (result.action === "block" && breaker.tripped(p.sessionID)) {
+          final = {
+            action: "pause",
+            reason: `${result.reason} — repeated blocked calls in this session; pausing for the user`,
+            source: result.source,
+            latencyMs: result.latencyMs,
+            usage: result.usage,
+          }
+        }
+        if (final.action === "allow") breaker.allow(p.sessionID)
+        else if (final.action === "block") breaker.block(p.sessionID)
+      }
+
       await audit({
         permission: p.permission,
         command: p.metadata?.command,
         patterns: p.patterns,
-        ...result,
+        ...final,
+        ...(final !== result ? { escalatedFrom: result.action } : {}),
       })
-      await log(result.action === "deny" ? "warn" : "info", `auto-jev ${result.action}`, {
+      await log(final.action === "deny" || final.action === "block" ? "warn" : "info", `auto-jev ${final.action}`, {
         permission: p.permission,
         command: p.metadata?.command,
-        action: result.action,
-        reason: result.reason,
-        source: result.source,
-        latencyMs: result.latencyMs,
-        usage: result.usage,
+        action: final.action,
+        reason: final.reason,
+        source: final.source,
+        latencyMs: final.latencyMs,
+        usage: final.usage,
       })
 
       if (cfg.dryRun) return // observe only; leave the TUI prompt
 
-      // Decide whether to answer the permission request.
-      let response: "once" | "reject" | undefined
-      if (result.action === "allow" && cfg.mode !== "allow-ask") response = "once"
-      else if (result.action === "deny" && cfg.mode === "allow-ask-deny") response = "reject"
-      // "ask" => stay silent; normal prompt shows
-      if (!response) return
-
       const label = String(p.metadata?.command ?? p.patterns?.[0] ?? p.permission)
-      try {
-        await client.postSessionIdPermissionsPermissionId({
-          path: { id: p.sessionID, permissionID: p.id },
-          body: { response },
-        })
-        await toast(
-          response === "once" ? "success" : "error",
-          `${response === "once" ? "auto-allowed" : "auto-denied"}: ${label.slice(0, 60)}`,
-        )
-      } catch (err) {
-        await log("error", "permission reply failed", { error: String(err) })
+
+      if (final.action === "allow" && cfg.mode !== "allow-ask") {
+        try {
+          await client.postSessionIdPermissionsPermissionId({
+            path: { id: p.sessionID, permissionID: p.id },
+            body: { response: "once" },
+          })
+          await toast("success", `auto-allowed: ${label.slice(0, 60)}`)
+        } catch (err) {
+          await log("error", "permission reply failed", { error: String(err) })
+        }
+        return
       }
+
+      if (final.action === "block") {
+        const ok = await rejectWithFeedback(p.sessionID, p.id, final.reason)
+        if (ok) {
+          await toast("warning", `auto-blocked: ${label.slice(0, 60)}`)
+          return
+        }
+        // v2 endpoint unavailable: a v1 reject would stop the loop, which is
+        // indistinguishable from "pause". Pause honestly instead.
+        await log("warn", "falling back to pause (no feedback channel)")
+        return
+      }
+
+      if (final.action === "deny" && cfg.mode === "allow-ask-deny") {
+        try {
+          await client.postSessionIdPermissionsPermissionId({
+            path: { id: p.sessionID, permissionID: p.id },
+            body: { response: "reject" },
+          })
+          await toast("error", `auto-denied: ${label.slice(0, 60)}`)
+        } catch (err) {
+          await log("error", "permission reply failed", { error: String(err) })
+        }
+        return
+      }
+
+      // "ask" / "pause" / anything else: stay silent; the normal prompt shows.
+      if (final.action === "pause") await toast("warning", `paused for review: ${label.slice(0, 60)}`)
     },
   }
 }
