@@ -1,6 +1,7 @@
 /**
  * Fetches the most recent user-authored text for the classifier's user_goal.
  * Failures are non-fatal — the caller falls back to "(not available)".
+ * Returns the last `count` user messages, oldest-to-newest.
  */
 
 // Minimal structural types so we don't depend on the full SDK generics.
