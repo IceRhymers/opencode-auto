@@ -1,9 +1,10 @@
 # opencode-auto
 
-Auto mode for [OpenCode](https://opencode.ai) powered by **TypeSafe SystemOne
-(OpenJev)** served through a **Databricks AI Gateway**. It classifies each
-permission request and decides — in code, not in a prompt — whether to
-auto-approve, auto-block, or leave the normal approval prompt for you.
+Auto mode for [OpenCode](https://opencode.ai) powered by a **SystemOne-compatible
+classifier** — either the native **TypeSafe SystemOne** API or **OpenJev** served
+through a **Databricks AI Gateway**. It classifies each permission request and
+decides — in code, not in a prompt — whether to auto-approve, auto-block, or
+leave the normal approval prompt for you.
 
 Two profiles:
 
@@ -97,12 +98,6 @@ and the project-local `./.opencode/opencode.json` in this repo. A global
 Dry-run mode logs every decision to `.opencode/auto-jev.log` without acting —
 watch it, then re-run `just install[-ug]` (no `-dry`) to go live.
 
-Authenticate once so the plugin can mint tokens:
-
-```sh
-databricks auth login --host https://fevm-tanner-wendland.cloud.databricks.com --profile fevm-west
-```
-
 ### Manual install
 
 If you prefer not to use `just`, add the plugin to the `plugin` array in
@@ -114,18 +109,81 @@ If you prefer not to use `just`, add the plugin to the `plugin` array in
 }
 ```
 
-or with options (here: interactive profile with dry-run):
+or with options (here: a databricks profile + interactive run mode):
 
 ```json
 {
-  "plugin": [["file:///path/to/opencode-auto/src/index.ts", { "runProfile": "interactive", "dryRun": true }]]
+  "plugin": [["file:///path/to/opencode-auto/src/index.ts", { "profile": "fevm-west", "runProfile": "interactive" }]]
 }
+```
+
+## Bring your own backend
+
+The classifier talks to any **SystemOne-compatible** endpoint. Pick one of two
+backends; the plugin auto-detects which one you mean from what you configure.
+
+| | **Native TypeSafe SystemOne** | **Databricks AI Gateway** |
+|-|-|-|
+| Endpoint | `https://api.typesafe.ai/v1/systemone` | `https://<host>/ai-gateway/typesafe/v1/systemone` |
+| Auth | API key in an env var | Databricks token (OAuth profile, PAT, or `DATABRICKS_TOKEN`) |
+| Default model | `jev-latest` | `system.ai.openjev-qwen35-4b` |
+
+**Auto-detection order** (first match wins):
+1. explicit `provider` option / `AUTO_JEV_PROVIDER`
+2. explicit `profile` or `host` plugin option → **databricks**
+3. the env var named by `apiKeyEnv` (default `TYPESAFE_API_KEY`) is set → **systemone**
+4. `DATABRICKS_TOKEN` / `DATABRICKS_HOST` / `DATABRICKS_CONFIG_PROFILE` set → **databricks**
+5. otherwise the plugin stays **inactive** (and does not touch your permissions)
+
+### Native SystemOne
+
+```sh
+export TYPESAFE_API_KEY=...        # the only requirement
+just install                       # auto-detects systemone
+```
+
+### Databricks — CLI profile (OAuth)
+
+```sh
+databricks auth login --host https://<workspace> --profile myprofile   # once
+just install-ug --profile myprofile
+```
+
+The host is resolved from the profile, so a profile name alone is enough.
+
+### Databricks — bring your own token
+
+```sh
+export DATABRICKS_HOST=https://<workspace>
+export DATABRICKS_TOKEN=dapi...      # PAT or OAuth token
+just install-ug
+```
+
+### Override the endpoint entirely
+
+Point at any SystemOne-compatible server (a proxy, a different gateway path):
+
+```sh
+just install-ug --url https://proxy.example.com/systemone --provider systemone
+```
+
+Check what the plugin resolved and probe it (auth + one cheap request):
+
+```sh
+just whoami                          # auto-detect
+just whoami --profile myprofile
+# provider: databricks
+# url:      https://<workspace>/ai-gateway/typesafe/v1/systemone
+# model:    system.ai.openjev-qwen35-4b
+# auth:     cli-profile:myprofile
+# probe:    ok
 ```
 
 ## Configuration
 
-Pass options via `[name, options]` in the `plugin` array, or via env vars
-(env wins):
+Pass options via `[name, options]` in the `plugin` array, or via env vars.
+**Explicit plugin options win over env vars** so a stray shell var can't hijack a
+deliberate install.
 
 | Option | Env | Default | Description |
 | - | - | - | - |
@@ -133,15 +191,21 @@ Pass options via `[name, options]` in the `plugin` array, or via env vars
 | `dryRun` | `AUTO_JEV_DRY_RUN` | `false` | log decisions without acting |
 | `runProfile` | `AUTO_JEV_PROFILE` | `unattended` | `interactive` / `unattended` |
 | `mode` | | `allow-ask-deny` | `allow-ask-deny` / `allow-ask` / `allow-deny` |
-| `host` | `DATABRICKS_HOST` | fevm-tanner-wendland | gateway host |
-| `profile` | `DATABRICKS_CONFIG_PROFILE` | `fevm-west` | CLI profile |
-| `model` | | `system.ai.openjev-qwen35-4b` | SystemOne model |
+| `provider` | `AUTO_JEV_PROVIDER` | auto | `systemone` / `databricks` |
+| `url` | `AUTO_JEV_URL` | per-provider | full endpoint URL; overrides host/path |
+| `apiKeyEnv` | | `TYPESAFE_API_KEY` | name of the env var holding the TypeSafe key |
+| `host` | `DATABRICKS_HOST` | from profile | databricks workspace host |
+| `profile` | `DATABRICKS_CONFIG_PROFILE` | | databricks CLI profile |
+| `model` | `AUTO_JEV_MODEL` | `jev-latest` / `system.ai.openjev-qwen35-4b` | classifier model |
 | `contextMessages` | | `3` | recent user messages used as goal |
 | `timeoutMs` | | `3000` | SystemOne timeout |
 | `maxConsecutiveBlocks` | | `2` | circuit breaker: blocks in a row before pausing |
 | `maxBlocksPerSession` | | `4` | circuit breaker: total blocks before pausing |
 | `escalate` | | `[bash, edit, webfetch, external_directory]` | permissions forced to `ask` so the classifier sees them |
 | `thresholds.*` | | see `policy.ts` | interactive-profile gates |
+
+The API key is **only ever read from the environment** — never from
+`opencode.json` — so it can't be committed by accident.
 
 ## Audit log
 
@@ -153,7 +217,7 @@ Every classified request appends a JSON line to `.opencode/auto-jev.log`
 
 ```sh
 bun install
-bun test          # unit tests (policy, state, context, breaker)
+bun test          # unit tests (policy, state, context, breaker, config, auth)
 bun x tsc --noEmit -p .   # typecheck
 ```
 
@@ -162,33 +226,41 @@ bun x tsc --noEmit -p .   # typecheck
 Tune questions and gates against the live endpoint. `eval/corpus.ts` holds
 cases labeled for the unattended tiers (`allow`/`block`/`pause`/`deny`);
 `run.ts` replays the **full pipeline** (static rules → model → unattended
-policy), reports accuracy + confusion, and caches live answers to
-`eval/cache.json`; `sweep.ts` grid-searches the risk gates offline over the
-cache. The primary safety metric is `block/deny -> allow`, which must be 0.
+policy), reports accuracy + confusion, and caches live answers to a
+per-backend file `eval/cache-<provider>-<model>.json`; `sweep.ts` grid-searches
+the risk gates offline over the cache. The eval uses the same `createBackend`
+as the plugin, so backend flags match production. The primary safety metric is
+`block/deny -> allow`, which must be 0.
 
 ```sh
-bun run eval/run.ts --verbose            # live, writes cache
-bun run eval/run.ts --cached --verbose   # offline replay
-bun run eval/sweep.ts                    # grid search over cache
+bun run eval/run.ts --verbose                          # live, writes cache (auto-detected backend)
+bun run eval/run.ts --cached --verbose                 # offline replay
+bun run eval/run.ts --provider databricks --profile X  # force a backend
+bun run eval/run.ts --provider systemone --model jev-latest
+bun run eval/sweep.ts                                  # grid search over cache
 ```
 
-Current corpus results (57 cases, stable across runs):
-`accuracy = 56/57 (98.2%)`, `block/deny -> allow = 0`. The single mismatch is
+Current corpus results (68 cases, databricks OpenJev, stable across runs):
+`accuracy = 67/68 (98.5%)`, `block/deny -> allow = 0`. The single mismatch is
 fail-safe (an upload to an external service is blocked rather than paused).
+Thresholds were tuned against OpenJev on Databricks; run the eval against
+`--provider systemone` before trusting the gates on the native model.
 
 ## Layout
 
 ```
 src/index.ts        plugin entry (config + event hooks, v2 reply w/ feedback)
-src/config.ts       option/env resolution (interactive/unattended profiles)
-src/auth.ts         databricks CLI token mint/cache
-src/systemone.ts    typed HTTP client, timeout, 429/529 backoff
+src/config.ts       option/env resolution + backend auto-detect
+src/backend.ts      wire backend config -> url + auth + client (plugin & eval)
+src/auth.ts         token sources: TypeSafe key env / DATABRICKS_TOKEN / CLI OAuth
+src/systemone.ts    typed SystemOne HTTP client (full URL, timeout, backoff)
+src/whoami.ts       print + probe the resolved backend
 src/classifier.ts   orchestration: static -> state -> model -> decide
-src/state.ts        build classifier state from permission + user msgs
+src/state.ts        build classifier state (permission + diff + user msgs)
 src/questions.ts    the 5 SystemOne questions
 src/policy.ts       static rules + tier logic (pure, unit-tested)
 src/breaker.ts      per-session circuit breaker (block -> pause)
 src/context.ts      fetch recent user messages
 test/               bun test
-eval/               corpus + runner + gate sweep (+ cached live answers)
+eval/               corpus + runner + gate sweep (+ per-backend cached answers)
 ```
