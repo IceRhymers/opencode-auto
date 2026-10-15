@@ -1,7 +1,8 @@
 /**
- * Plugin configuration, resolved from plugin options (opencode.json
- * `[name, options]`) and env vars. Explicit options win over env so a stray
- * shell var can't hijack a deliberate install.
+ * Plugin configuration, resolved from plugin options (the entry's `options`
+ * object in the opencode.json(c) `plugins` array, or a V1 `[name, options]`
+ * tuple) and env vars. Explicit options win over env so a stray shell var
+ * can't hijack a deliberate install.
  *
  * The classifier backend is bring-your-own:
  *   - "systemone": the native TypeSafe SystemOne API
@@ -59,7 +60,8 @@ export type Config = {
   contextMessages: number
   timeoutMs: number
   thresholds: Thresholds
-  /** permissions to escalate to "ask" so the classifier sees them */
+  /** actions classified even when V2 resolves "allow" (internal names:
+   *  "bash" covers V2's "shell", "task" covers "subagent") */
   escalate: string[]
   logPath: string
   /** circuit breaker (unattended profile) */

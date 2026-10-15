@@ -56,11 +56,11 @@ uninstall-project:
 # --- status ---
 status:
     @echo "normal ({{NORMAL_CONFIG}}):"; \
-      grep -q "opencode-auto/src/index.ts" "{{NORMAL_CONFIG}}" && echo "  installed" || echo "  not installed"
+      grep -q "opencode-auto" "{{NORMAL_CONFIG}}" && echo "  installed" || echo "  not installed"
     @echo "ug ({{UG_CONFIG}}):"; \
-      grep -q "opencode-auto/src/index.ts" "{{UG_CONFIG}}" && echo "  installed" || echo "  not installed"
+      grep -q "opencode-auto" "{{UG_CONFIG}}" && echo "  installed" || echo "  not installed"
     @echo "project ({{PROJECT_CONFIG}}):"; \
-      grep -q "opencode-auto/src/index.ts" "{{PROJECT_CONFIG}}" && echo "  installed" || echo "  not installed"
+      grep -q "opencode-auto" "{{PROJECT_CONFIG}}" && echo "  installed" || echo "  not installed"
 
 # --- dev ---
 test:

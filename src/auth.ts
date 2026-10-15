@@ -12,9 +12,9 @@
  *
  * All expose the same { warmup, token } shape the HTTP client expects.
  */
-import type { PluginInput } from "@opencode-ai/plugin"
+import type { $ } from "bun"
 
-type BunShell = PluginInput["$"]
+type BunShell = typeof $
 
 const REFRESH_SKEW_MS = 5 * 60 * 1000
 const FALLBACK_TTL_MS = 50 * 60 * 1000

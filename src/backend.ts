@@ -4,12 +4,12 @@
  * URL/auth resolution. Also resolves a databricks host from a CLI profile
  * when the config gave only a profile name.
  */
-import type { PluginInput } from "@opencode-ai/plugin"
+import type { $ } from "bun"
 import { createAuth, type Auth, type AuthSource } from "./auth.js"
 import { createSystemOne, type SystemOne } from "./systemone.js"
 import { DEFAULT_URLS, type BackendConfig } from "./config.js"
 
-type BunShell = PluginInput["$"]
+type BunShell = typeof $
 
 export type Backend = {
   provider: "systemone" | "databricks"

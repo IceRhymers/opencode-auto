@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["src", "test", "eval"]
+  "include": ["index.ts", "src", "test", "eval"]
 }

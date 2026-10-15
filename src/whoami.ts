@@ -29,7 +29,7 @@ if (!backend) {
 
 try {
   const $ = (await import("bun")).$
-  const b = await createBackend(backend, $ as never)
+  const b = await createBackend(backend, $)
   console.log(`provider: ${b.provider}`)
   console.log(`url:      ${b.url}`)
   console.log(`model:    ${b.model}`)

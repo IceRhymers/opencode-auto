@@ -1,19 +1,17 @@
 /**
- * Fetches the most recent user-authored text for the classifier's user_goal.
- * Failures are non-fatal — the caller falls back to "(not available)".
- * Returns the last `count` user messages, oldest-to-newest.
+ * Fetches the most recent user-authored text for the classifier's user_goal,
+ * from the V2 session context endpoint. Failures are non-fatal — the caller
+ * falls back to "(not available)". Returns the last `count` user messages,
+ * oldest-to-newest.
  */
 
 // Minimal structural types so we don't depend on the full SDK generics.
-type TextPart = { type: string; text?: string }
-type MessageEntry = { info?: { role?: string }; parts?: TextPart[] }
+// SessionMessageInfo entries are typed unions; user messages carry `text`.
+type ContextEntry = { type?: string; text?: string }
 
 export type MessagesClient = {
   session: {
-    messages(opts: {
-      path: { id: string }
-      query?: { limit?: number }
-    }): Promise<{ data?: MessageEntry[] } | MessageEntry[]>
+    context(opts: { sessionID: string }): Promise<ContextEntry[]>
   }
 }
 
@@ -23,16 +21,11 @@ export async function recentUserMessages(
   count = 3,
 ): Promise<string[]> {
   try {
-    const res = await client.session.messages({ path: { id: sessionID }, query: { limit: 50 } })
-    const entries: MessageEntry[] = Array.isArray(res) ? res : (res.data ?? [])
+    const entries = await client.session.context({ sessionID })
     const out: string[] = []
     for (const e of entries) {
-      if (e.info?.role !== "user" || !Array.isArray(e.parts)) continue
-      const text = e.parts
-        .filter((p) => p.type === "text" && typeof p.text === "string")
-        .map((p) => p.text!.trim())
-        .filter(Boolean)
-        .join("\n")
+      if (e.type !== "user" || typeof e.text !== "string") continue
+      const text = e.text.trim()
       if (text) out.push(text)
     }
     return out.slice(-count)

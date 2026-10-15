@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """Install the opencode-auto plugin into an opencode.json config's plugin array.
 
+Writes the V2 `plugins` object form ({"package", "options"}) when the config
+already uses `plugins`; otherwise appends the V1 tuple form to `plugin` (V2
+normalizes it on load). Both keys are never written at once — when both are
+present V2 normalization can shadow entries. Removal scans both keys.
+
 Idempotent: adds the plugin entry only if not already present. Preserves the
 existing file's formatting (2-space indent) and key order. Backs up the file
 first. Usage:
 
     install.py <config-path> [--entry <entry>] [--dry-run] [--remove]
 
-<entry> defaults to file://<repo>/src/index.ts. --dry-run enables dryRun mode.
+<entry> defaults to file://<repo> (V2 loads plugin package directories, not
+single files; package.json's "main" points at src/index.ts). --dry-run enables
+dryRun mode.
 """
 import argparse
 import json
@@ -17,8 +24,8 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
-DEFAULT_ENTRY = f"file://{REPO}/src/index.ts"
-MARKER = "opencode-auto/src/index.ts"
+DEFAULT_ENTRY = f"file://{REPO}"
+MARKER = "opencode-auto"
 
 
 def is_ours(p) -> bool:
@@ -26,7 +33,19 @@ def is_ours(p) -> bool:
         return MARKER in p
     if isinstance(p, list) and p and isinstance(p[0], str):
         return MARKER in p[0]
+    if isinstance(p, dict):
+        return MARKER in str(p.get("package", ""))
     return False
+
+
+def build_entry(key: str, path_str: str, options: dict):
+    """Plugin array entry in the shape the config's key expects."""
+    if key == "plugins":
+        entry = {"package": path_str}
+        if options:
+            entry["options"] = options
+        return entry
+    return [path_str, options] if options else path_str
 
 
 def remove_from(config_path: Path) -> str:
@@ -34,10 +53,14 @@ def remove_from(config_path: Path) -> str:
     if not config_path.exists():
         return f"skip (missing): {config_path}"
     data = json.loads(config_path.read_text())
-    plugins = data.get("plugin", [])
-    if not isinstance(plugins, list) or not any(is_ours(p) for p in plugins):
+    changed = False
+    for key in ("plugin", "plugins"):
+        plugins = data.get(key, [])
+        if isinstance(plugins, list) and any(is_ours(p) for p in plugins):
+            data[key] = [p for p in plugins if not is_ours(p)]
+            changed = True
+    if not changed:
         return f"not installed: {config_path}"
-    data["plugin"] = [p for p in plugins if not is_ours(p)]
     backup = config_path.with_suffix(config_path.suffix + f".bak-auto-jev-{time.strftime('%Y%m%dT%H%M%S')}")
     shutil.copy2(config_path, backup)
     config_path.write_text(json.dumps(data, indent=2) + "\n")
@@ -100,16 +123,18 @@ def main() -> int:
         print(f"error: config not found: {config_path}", file=sys.stderr)
         return 1
 
-    path_str = "file://" + str(REPO / "src" / "index.ts")
+    path_str = "file://" + str(REPO)
     options = build_options(args)
-    entry = args.entry
-    if entry is None:
-        entry = [path_str, options] if options else path_str
 
     data = json.loads(config_path.read_text())
-    plugins = data.setdefault("plugin", [])
+    # Match the key the config already uses: V2 `plugins` (object entries) or
+    # V1 `plugin` (string/tuple entries, normalized by V2 on load). Never
+    # write both — V2 merges them and existing entries can be shadowed.
+    key = "plugins" if "plugins" in data else "plugin"
+    entry = args.entry if args.entry is not None else build_entry(key, path_str, options)
+    plugins = data.setdefault(key, [])
     if not isinstance(plugins, list):
-        print("error: 'plugin' is not an array", file=sys.stderr)
+        print(f"error: '{key}' is not an array", file=sys.stderr)
         return 1
 
     backup = config_path.with_suffix(config_path.suffix + f".bak-auto-jev-{time.strftime('%Y%m%dT%H%M%S')}")

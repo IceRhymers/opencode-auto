@@ -1,10 +1,11 @@
 # opencode-auto
 
-Auto mode for [OpenCode](https://opencode.ai) powered by a **SystemOne-compatible
+Auto mode for [OpenCode](https://opencode.ai) **V2** powered by a **SystemOne-compatible
 classifier** — either the native **TypeSafe SystemOne** API or **OpenJev** served
 through a **Databricks AI Gateway**. It classifies each permission request and
 decides — in code, not in a prompt — whether to auto-approve, auto-block, or
-leave the normal approval prompt for you.
+leave the normal approval prompt for you. (For OpenCode V1, use the `v1-final`
+tag — the V1 plugin API does not run on V2.)
 
 Two profiles:
 
@@ -21,8 +22,10 @@ Two profiles:
 
 ```
 tool call → OpenCode permission rules
-   ├─ explicit allow/deny → unchanged (classifier never sees it)
-   └─ "ask" → permission.asked event → this plugin
+   ├─ explicit deny → rejected (classifier never sees it)
+   └─ allow / ask → permission "evaluate" hook → this plugin
+         0. skip when the decision is "allow" for a non-escalated
+            action (read, grep, glob, ... stay silent)
          1. static fast-path rules (hard-deny list, destructive-command
             detector, secret-read guard, read-only chain allow list)
          2. build state {tool, command, patterns, cwd, recent user messages}
@@ -34,6 +37,12 @@ tool call → OpenCode permission rules
               scope (workspace | home | system | network)
          4. profile policy → allow | block | pause | ask | deny
 ```
+
+The hook runs **inline, before any prompt is published**, and rewrites the
+decision: `allow` executes, `deny` rejects with a message the agent reads as
+a tool error (blocks), `ask` shows the prompt with the classifier's reason
+attached (pauses). Because the hook is awaited, decisions apply everywhere —
+TUI and headless alike.
 
 **Unattended decision tiers** (the risk signals gate, not intent):
 
@@ -55,28 +64,32 @@ Failure modes are **fail-safe**: any classifier error, timeout, or missing
 answer degrades to `pause` (unattended) / `ask` (interactive). It never
 auto-allows on failure.
 
-Only tool calls that would already ask for permission are classified. Your
-explicit `allow`/`deny` rules in `opencode.json` always take priority and run
-first. Commands that target the classifier itself (its source tree, install
-config, audit log) are hard-denied statically.
+Every `ask` decision is classified, plus `allow` decisions for the escalated
+actions (`shell`, `edit`, `webfetch`, `external_directory`) — V2 defaults
+allow those, which is exactly the traffic the classifier exists for. Explicit
+`deny` rules in `opencode.json(c)` always take priority and never reach the
+plugin. Two caveats of hook-based escalation: your explicit `allow` rules and
+saved "always" approvals for the escalated actions are re-checked too (the
+hook can't tell them apart from V2's defaults), and there is no config
+mutation — your file is never rewritten. Commands that target the classifier
+itself (its source tree, install config, audit log) are hard-denied
+statically.
 
 ### Headless `opencode run`
 
-The plugin is built for the **TUI**, where the permission prompt waits for a
-human and the classifier's sub-second reply lands first and drives the tool.
-In headless `opencode run`, OpenCode rejects any unanswered permission after a
-short watchdog (~100ms). Static fast-path decisions (~2ms) still win that race,
-but model-path decisions (~450-550ms) do not — the call is auto-rejected and
-the agent adapts. That's the safe behavior; just don't rely on model-path
-auto-approvals in unattended runs.
+The evaluate hook runs inline and is awaited, so auto-allow and auto-block
+work the same in headless runs as in the TUI — the V1 watchdog race is gone.
+Decisions that keep the prompt (`ask`/`pause`) still need a client that
+answers prompts; in a headless run those stall or are rejected by the
+runner, which is the safe behavior.
 
 ## Install
 
 A [Justfile](https://github.com/casey/just) manages installation into two
 configs: normal OpenCode (`~/.config/opencode/opencode.json`) and the **ug**
-setup (`~/.ucode/opencode-xdg/opencode/opencode.json`). It edits the `plugin`
-array in place (preserving formatting/key order), backs up first, and is
-idempotent.
+setup (`~/.ucode/opencode-xdg/opencode/opencode.json`). It edits the `plugins`
+(or V1 `plugin`) array in place (preserving formatting/key order), backs up
+first, and is idempotent.
 
 ```sh
 just install-dry        # normal opencode, dry-run (log only — start here)
@@ -100,12 +113,14 @@ watch it, then re-run `just install[-ug]` (no `-dry`) to go live.
 
 ### Manual install
 
-If you prefer not to use `just`, add the plugin to the `plugin` array in
-`opencode.json` yourself:
+If you prefer not to use `just`, add the plugin package **directory** to the
+`plugins` array in `opencode.json(c)` yourself (V2 does not load single-file
+paths from the config; it resolves `<dir>/server.*` then `<dir>/index.*` —
+the root `index.ts` here re-exports `src/index.ts`):
 
 ```json
 {
-  "plugin": ["file:///absolute/path/to/opencode-auto/src/index.ts"]
+  "plugins": [{ "package": "file:///absolute/path/to/opencode-auto" }]
 }
 ```
 
@@ -113,9 +128,20 @@ or with options (here: a databricks profile + interactive run mode):
 
 ```json
 {
-  "plugin": [["file:///path/to/opencode-auto/src/index.ts", { "profile": "fevm-west", "runProfile": "interactive" }]]
+  "plugins": [
+    {
+      "package": "file:///path/to/opencode-auto",
+      "options": { "profile": "fevm-west", "runProfile": "interactive" }
+    }
+  ]
 }
 ```
+
+The V1 `plugin` array also works for plain string entries — V2 normalizes it
+on load — but don't define both keys, and don't register the same package in
+two configs with different options: entries are deduplicated by resolved path
+and the **highest-precedence config wins** (project `.opencode/` beats
+global), so a stale project entry silently shadows your global options.
 
 ## Bring your own backend
 
@@ -181,7 +207,8 @@ just whoami --profile myprofile
 
 ## Configuration
 
-Pass options via `[name, options]` in the `plugin` array, or via env vars.
+Pass options via the entry's `options` object in the `plugins` array (or the
+`[name, options]` tuple in a V1 `plugin` array), or via env vars.
 **Explicit plugin options win over env vars** so a stray shell var can't hijack a
 deliberate install.
 
@@ -201,7 +228,7 @@ deliberate install.
 | `timeoutMs` | | `3000` | SystemOne timeout |
 | `maxConsecutiveBlocks` | | `2` | circuit breaker: blocks in a row before pausing |
 | `maxBlocksPerSession` | | `4` | circuit breaker: total blocks before pausing |
-| `escalate` | | `[bash, edit, webfetch, external_directory]` | permissions forced to `ask` so the classifier sees them |
+| `escalate` | | `[bash, edit, webfetch, external_directory]` | actions classified even when V2 resolves `allow` (`bash` covers V2's `shell`) |
 | `thresholds.*` | | see `policy.ts` | interactive-profile gates |
 
 The API key is **only ever read from the environment** — never from
@@ -249,7 +276,9 @@ Thresholds were tuned against OpenJev on Databricks; run the eval against
 ## Layout
 
 ```
-src/index.ts        plugin entry (config + event hooks, v2 reply w/ feedback)
+index.ts            package entry shim (V2 resolves <dir>/index.*, not "main")
+src/index.ts        plugin entry (V2 setup: execute.before + permission evaluate)
+src/adapter.ts      V2 translation: action names, command capture, effect mapping
 src/config.ts       option/env resolution + backend auto-detect
 src/backend.ts      wire backend config -> url + auth + client (plugin & eval)
 src/auth.ts         token sources: TypeSafe key env / DATABRICKS_TOKEN / CLI OAuth
@@ -260,7 +289,7 @@ src/state.ts        build classifier state (permission + diff + user msgs)
 src/questions.ts    the 5 SystemOne questions
 src/policy.ts       static rules + tier logic (pure, unit-tested)
 src/breaker.ts      per-session circuit breaker (block -> pause)
-src/context.ts      fetch recent user messages
+src/context.ts      fetch recent user messages (session context endpoint)
 test/               bun test
 eval/               corpus + runner + gate sweep (+ per-backend cached answers)
 ```

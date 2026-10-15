@@ -58,7 +58,7 @@ async function client() {
   if (_client) return _client
   if (!BACKEND_CFG) throw new Error(unconfigured ?? "no backend")
   const $ = (await import("bun")).$
-  const backend = await createBackend(BACKEND_CFG, $ as never)
+  const backend = await createBackend(BACKEND_CFG, $)
   console.log(`backend: ${backend.provider} url=${backend.url} model=${backend.model} auth=${backend.auth.describe}`)
   _client = backend.client
   return _client
