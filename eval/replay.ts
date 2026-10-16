@@ -8,16 +8,22 @@
  * replayed against the cached answers in eval/cache.json when the command
  * matches a corpus case (offline approximation), otherwise marked "(model)".
  *
- * Usage: bun run eval/replay.ts [path-to-log]
+ * Usage: bun run eval/replay.ts [path-to-log] [--model <name>]
+ *   --model defaults to the current OpenJev model (DEFAULT_MODELS.databricks).
  */
 import { staticDecision, type SelfPaths } from "../src/policy.ts"
+import { DEFAULT_MODELS } from "../src/config.ts"
 import { CORPUS } from "./corpus.ts"
 import { pipeline, cachePathFor } from "./run.ts"
 import type { Answer } from "../src/systemone.ts"
 
-const LOG = process.argv[2] ?? ".opencode/auto-jev.log"
+// positional log path = first arg that isn't --model or its value
+const argv = process.argv.slice(2)
+const mi = argv.indexOf("--model")
+const MODEL = mi >= 0 ? argv[mi + 1] : DEFAULT_MODELS.databricks
+const LOG = (mi >= 0 ? argv.filter((_, i) => i !== mi && i !== mi + 1) : argv)[0] ?? ".opencode/auto-jev.log"
 // replay against the databricks cache by default (that's what the log was made with)
-const CACHE = cachePathFor("databricks", "system.ai.openjev-qwen35-4b")
+const CACHE = cachePathFor("databricks", MODEL)
 const SELF: SelfPaths = { worktree: "/Users/tanner.wendland/projects/opencode-auto", logPath: ".opencode/auto-jev.log" }
 
 type LogEntry = {
