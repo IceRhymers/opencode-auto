@@ -115,6 +115,10 @@ export function destructiveness(cmd: string): { level: "none" | "possible" | "de
   // git reset --hard
   if (/\bgit\s+reset\b[^|;&]*\s--hard\b/.test(cmd)) destructive = true
 
+  // git commit --amend rewrites the tip commit; whether it was already pushed
+  // is unknowable here, so it gets the same treatment as reset --hard
+  if (/\bgit\s+commit\b[^|;&]*\s--amend\b/.test(cmd)) destructive = true
+
   if (!destructive) return { level: "none", target: "workspace" }
 
   // rm of / or ~ in any flag/quoting form. Covers -rf, -r -f, --recursive
@@ -142,11 +146,29 @@ function classifyKill(cmd: string): "killall" | "port" | "ordinary" | "none" {
 }
 
 /**
+ * Replace `$(cat <<'TAG' ... TAG)` heredoc substitutions with a placeholder.
+ * This is how agents build multi-line git commit messages, and the body
+ * breaks both the $(...) guard and stage splitting (it can contain `;`).
+ * Only QUOTED delimiters ('TAG' / "TAG") are stripped: a quoted heredoc body
+ * is literal text, inert inside the quoted -m argument. An unquoted heredoc
+ * would expand $(...) in its body, so it is left for the model.
+ */
+export function stripCatHeredocs(cmd: string): string {
+  return cmd.replace(
+    /\$\(\s*cat\s+<<-?\s*(['"])(\w+)\1\s*\n[\s\S]*?\n\t*(\w+)\s*\)/g,
+    (m, _q, open, close) => (open === close ? "MSG" : m),
+  )
+}
+
+/**
  * True for a plain `git commit` (optionally with `git add` of workspace files
  * before it in the same command). False when the command pushes, amends, or
- * does anything beyond committing — those stay with the model/policy.
+ * does anything beyond committing — those stay with the model/policy. A
+ * multi-line message via `git commit -m "$(cat <<'EOF' ... EOF)"` still
+ * counts as plain: the heredoc is stripped first.
  */
 export function isPlainGitCommit(cmd: string): boolean {
+  cmd = stripCatHeredocs(cmd)
   if (/\$\(|`/.test(cmd)) return false
   const stages = splitStages(cmd)
   if (!stages.some((s) => /^git\s+commit\b/.test(s))) return false
@@ -177,10 +199,15 @@ const HARD_DENY: RegExp[] = [
 
 /** Read-only commands that are always allowed without the model. */
 const TRIVIAL_ALLOW: RegExp[] = [
-  /^(git\s+(status|diff|log|show|branch|rev-parse|blame|fetch|describe|tag|stash\s+list|worktree\s+list))\b/,
+  /^(git\s+(status|diff|log|show|branch|rev-parse|blame|fetch|describe|tag|remote|stash\s+(list|show)|worktree\s+list))\b/,
   /^(ls|pwd|echo|cat|head|tail|wc|which|whoami|date|env|file|stat|du|df|rg|grep|sort|uniq|cut|tr)\b/,
   /^find\b(?!.*\s-(delete|exec|ok)\b)/,
-  /^sed\s+(-[a-zA-Z]*\s+)*(['"])[^'"]*\2(?!.*\s-i\b)/,
+  // sed: quoted or unquoted-print scripts, never in-place. The flag class
+  // excludes i so `-ni`/`-i.bak` can't sneak in-place edits past the
+  // whitespace-anchored lookahead, and quoted scripts reject w/W/e commands
+  // (file writes / exec; s///e is GNU-only and left as a known gap).
+  /^sed\s+(-[a-hj-zA-Z]*\s+)*(['"])((?:(?![wWe]\s)[^'"])*)\2(?!.*\s-i\b)/,
+  /^sed\s+(-[a-hj-zA-Z]*\s+)*([0-9$.,]+|\/[^/\s]+\/)p(\s|$)(?!.*\s-i\b)/,
   /^awk\b/,
   /^(bun|npm|pnpm|yarn)\s+(test|run\s+test|run\s+(build|typecheck|lint|check))\b/,
   /^(tsc|bun\s+x\s+tsc|bunx\s+tsc|npx\s+tsc)\b.*--noEmit/,
@@ -438,7 +465,7 @@ export function staticDecision(
     if (d.target === "sensitive") {
       return { action: interactive ? "ask" : "pause", reason: "destructive command touches a sensitive path" }
     }
-    return { action: interactive ? "ask" : "pause", reason: "destructive in-workspace change (rm -rf / git branch -D / git reset --hard)" }
+    return { action: interactive ? "ask" : "pause", reason: "destructive in-workspace change (rm -rf / git branch -D / git reset --hard / git commit --amend)" }
   }
 
   if (readOnlyChain(cmd)) {
@@ -498,7 +525,11 @@ export function decide(
 
   if (opts?.unattended) {
     const exfilBlock = exfil > 0.35
-    const irrevBlock = irreversible > 0.45
+    // 0.55: both OpenJev and ai-decide cluster clearly-reversible routine
+    // actions (npm install, touch, sed -i on tracked files) at 0.46-0.53,
+    // while genuinely irreversible ones score far higher; 0.45 sat inside
+    // the routine cluster (see eval caches + sweep).
+    const irrevBlock = irreversible > 0.55
     const dangerous = verdict.choice === "dangerous"
     if (dangerous && (verdict.confidence >= 0.7 || irrevBlock || exfilBlock || intent < 0.2)) {
       return {

@@ -93,7 +93,7 @@ def main() -> int:
     ap.add_argument("--entry", default=None, help="plugin array entry to add/remove")
     ap.add_argument("--dry-run", action="store_true", help="add with {dryRun: true} options")
     ap.add_argument("--remove", action="store_true", help="remove the plugin instead")
-    ap.add_argument("--provider", choices=["systemone", "databricks"], default=None)
+    ap.add_argument("--provider", choices=["systemone", "databricks", "ai-decide"], default=None)
     ap.add_argument("--profile", default=None, help="databricks CLI profile")
     ap.add_argument("--host", default=None, help="databricks workspace host")
     ap.add_argument("--url", default=None, help="full SystemOne-compatible endpoint URL (overrides host/path)")

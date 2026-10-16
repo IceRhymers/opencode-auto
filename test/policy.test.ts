@@ -49,6 +49,8 @@ describe("staticDecision", () => {
     expect(staticDecision(bash("rm -rf ./build"))?.action).toBe("pause")
     expect(staticDecision(bash("git reset --hard HEAD~10"))?.action).toBe("pause")
     expect(staticDecision(bash("git reset --hard HEAD~10"), I)?.action).toBe("ask")
+    expect(staticDecision(bash("git commit --amend --no-edit"))?.action).toBe("pause")
+    expect(staticDecision(bash("git commit --amend --no-edit"), I)?.action).toBe("ask")
     expect(staticDecision(bash("git branch -D feature"))?.action).toBe("pause")
     expect(staticDecision(bash("git branch --delete old"))?.action).toBe("pause")
     expect(staticDecision(bash("rm -rf node_modules"))?.action).toBe("pause")
@@ -137,6 +139,53 @@ describe("staticDecision", () => {
     // push / amend stay with the model/policy
     expect(staticDecision(bash("git commit -m x && git push"))?.action).not.toBe("allow")
     expect(staticDecision(bash("git commit --amend --no-edit"))?.action).not.toBe("allow")
+  })
+  test("heredoc commit messages count as plain commits", () => {
+    // the standard agent pattern: git commit -m "$(cat <<'EOF' ... EOF)"
+    expect(staticDecision(bash('git commit -m "$(cat <<\'EOF\'\nAdd the thing\n\n- details; with semicolons\nEOF\n)"'))?.action).toBe(
+      "allow",
+    )
+    expect(
+      staticDecision(bash('git add src/ && git commit -m "$(cat <<\'EOF\'\nAdd the thing\nEOF\n)"'))?.action,
+    ).toBe("allow")
+    // the word "push" inside the message body is not a push
+    expect(staticDecision(bash('git commit -m "$(cat <<\'EOF\'\nRevert the push of feature x\nEOF\n)"'))?.action).toBe(
+      "allow",
+    )
+    // but a real second stage still disqualifies
+    expect(
+      staticDecision(bash('git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)" && git push'))?.action,
+    ).not.toBe("allow")
+    expect(
+      staticDecision(bash('git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)" && rm -rf ./dist'))?.action,
+    ).not.toBe("allow")
+    // an UNQUOTED heredoc expands $(...) in its body: stays with the model
+    expect(staticDecision(bash('git commit -m "$(cat <<EOF\nmsg\nEOF\n)"'))?.action).toBeUndefined()
+    // a mismatched delimiter is not stripped (stays with the model via the $( guard)
+    expect(staticDecision(bash('git commit -m "$(cat <<\'EOF\'\nmsg\nDONE\n)"'))?.action).toBeUndefined()
+  })
+  test("read-only sed and git inspection commands are static-allowed", () => {
+    // unquoted print scripts (the form agents actually emit)
+    expect(staticDecision(bash("sed -n 2500,2525p dist/gen/types.gen.d.ts"))?.action).toBe("allow")
+    expect(staticDecision(bash("sed -n /version/p package.json"))?.action).toBe("allow")
+    expect(staticDecision(bash("sed -n 1,10p"))?.action).toBe("allow") // pipe tail, no file arg
+    expect(staticDecision(bash("cd node_modules/x && sed -n 1,5p dist/a.d.ts"))?.action).toBe("allow")
+    // quoted scripts still fine
+    expect(staticDecision(bash("sed -n '1,10p' file"))?.action).toBe("allow")
+    expect(staticDecision(bash("sed 's/a/b/' file"))?.action).toBe("allow")
+    // in-place edits and file-write/exec script commands never static-allow
+    expect(staticDecision(bash("sed -i s/a/b/ file"))?.action).toBeUndefined()
+    expect(staticDecision(bash("sed -ni 's/a/b/' file"))?.action).toBeUndefined()
+    expect(staticDecision(bash("sed -n '1,10p' -i file"))?.action).toBeUndefined()
+    expect(staticDecision(bash("sed -n '1w /tmp/x' file"))?.action).toBeUndefined()
+    expect(staticDecision(bash("sed '1e id' file"))?.action).toBeUndefined()
+    // git read-only subcommands
+    expect(staticDecision(bash("git remote -v"))?.action).toBe("allow")
+    expect(staticDecision(bash("git stash show -p stash@{0}"))?.action).toBe("allow")
+    expect(staticDecision(bash("git remote -v; echo ---; git branch --show-current"))?.action).toBe("allow")
+    expect(staticDecision(bash("git stash show -p stash@{0} --stat; git status --short"))?.action).toBe("allow")
+    // stash mutation stays with the model
+    expect(staticDecision(bash('git stash push -m "wip"'))?.action).toBeUndefined()
   })
   test("printing a live credential is blocked, even when read-only", () => {
     expect(staticDecision(bash("databricks auth token --profile x --output json"))?.action).toBe("block")

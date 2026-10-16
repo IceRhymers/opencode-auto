@@ -27,6 +27,12 @@ describe("detectProvider", () => {
   test("nothing configured -> undefined", () => {
     expect(detectProvider({}, E())).toBeUndefined()
   })
+  test("ai-decide is explicit-only, never inferred from databricks signals", () => {
+    expect(detectProvider({ profile: "fevm-west" }, E())).toBe("databricks")
+    expect(detectProvider({}, E({ DATABRICKS_TOKEN: "t", DATABRICKS_HOST: "https://x" }))).toBe("databricks")
+    expect(detectProvider({ provider: "ai-decide" }, E())).toBe("ai-decide")
+    expect(detectProvider({}, E({ AUTO_JEV_PROVIDER: "ai-decide", DATABRICKS_HOST: "https://x" }))).toBe("ai-decide")
+  })
 })
 
 describe("resolveBackend", () => {
@@ -72,6 +78,29 @@ describe("resolveBackend", () => {
   test("explicit provider + model override", () => {
     const r = resolveBackend({ provider: "systemone", model: "jev-1.13.0" }, E({ TYPESAFE_API_KEY: "k" }))
     expect(r.backend?.model).toBe("jev-1.13.0")
+  })
+  test("ai-decide host + ai-functions path, version label as model", () => {
+    const r = resolveBackend({ provider: "ai-decide", host: "https://x.cloud.databricks.com/" }, E())
+    expect(r.backend).toMatchObject({
+      provider: "ai-decide",
+      url: "https://x.cloud.databricks.com/api/2.0/ai-functions/ai-decide",
+      model: "v1.0",
+    })
+  })
+  test("ai-decide profile-only leaves url empty for later resolution", () => {
+    const r = resolveBackend({ provider: "ai-decide", profile: "fevm-west" }, E())
+    expect(r.backend).toMatchObject({ provider: "ai-decide", profile: "fevm-west", url: "" })
+  })
+  test("ai-decide url override skips host resolution", () => {
+    const r = resolveBackend({ provider: "ai-decide", url: "https://proxy.example.com/decide" }, E())
+    expect(r.backend?.url).toBe("https://proxy.example.com/decide")
+  })
+  test("ai-decide via env with databricks host env", () => {
+    const r = resolveBackend({}, E({ AUTO_JEV_PROVIDER: "ai-decide", DATABRICKS_HOST: "https://x" }))
+    expect(r.backend).toMatchObject({
+      provider: "ai-decide",
+      url: "https://x/api/2.0/ai-functions/ai-decide",
+    })
   })
 })
 

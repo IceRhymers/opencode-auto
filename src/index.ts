@@ -1,6 +1,7 @@
 /**
  * opencode-auto — auto mode powered by a SystemOne-compatible classifier
- * (native TypeSafe SystemOne, or OpenJev via a Databricks AI Gateway).
+ * (native TypeSafe SystemOne, OpenJev via a Databricks AI Gateway, or the
+ * Databricks AI Decide function API).
  *
  * OpenCode V2 plugin. Classification happens in the permission "evaluate"
  * hook, which runs inline before any prompt is published and can rewrite the
@@ -76,7 +77,7 @@ export default Plugin.define({
     let backendErr: string | undefined = cfg.unconfigured
     if (cfg.backend) {
       try {
-        backend = await createBackend(cfg.backend, $)
+        backend = await createBackend(cfg.backend, $, { timeoutMs: cfg.timeoutMs })
       } catch (e) {
         backendErr = e instanceof Error ? e.message : String(e)
       }

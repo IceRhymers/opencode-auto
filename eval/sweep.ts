@@ -29,6 +29,10 @@ const OPTS: Record<string, unknown> = {
 }
 const { backend } = resolveBackend(OPTS, process.env)
 const CACHE = cachePathFor(backend?.provider ?? "databricks", backend?.model ?? "system.ai.openjev-qwen35-4b")
+// Log the resolved cache: an under-specified provider (e.g. --provider
+// ai-decide without --profile/--host) silently falls back to the databricks
+// cache above, which looks like a result for the requested backend.
+console.log(`cache: ${CACHE}`)
 
 type Gates = {
   exfilBlock: number

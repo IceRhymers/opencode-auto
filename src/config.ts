@@ -11,6 +11,10 @@
  *   - "databricks": a Databricks AI Gateway path
  *     (https://<host>/ai-gateway/typesafe/v1/systemone), authenticated with a
  *     Databricks token (DATABRICKS_TOKEN or an OAuth CLI profile).
+ *   - "ai-decide": the Databricks AI Decide function API (beta)
+ *     (https://<host>/api/2.0/ai-functions/ai-decide), same auth as
+ *     "databricks". Explicit opt-in only: it is never auto-detected from
+ *     host/profile/env, and it has no selectable model.
  * `url` overrides the endpoint outright for any SystemOne-compatible server.
  */
 import { DEFAULT_THRESHOLDS, type Thresholds } from "./policy.js"
@@ -19,16 +23,20 @@ export type Profile = "interactive" | "unattended"
 
 export type Mode = "allow-ask-deny" | "allow-ask" | "allow-deny"
 
-export type Provider = "systemone" | "databricks"
+export type Provider = "systemone" | "databricks" | "ai-decide"
 
 export const DEFAULT_URLS: Record<Provider, string> = {
   systemone: "https://api.typesafe.ai/v1/systemone",
   databricks: "/ai-gateway/typesafe/v1/systemone", // joined to the host
+  "ai-decide": "/api/2.0/ai-functions/ai-decide", // joined to the host
 }
 
 export const DEFAULT_MODELS: Record<Provider, string> = {
   systemone: "jev-latest",
   databricks: "system.ai.openjev-qwen35-4b",
+  // ai-decide has no selectable model; this is a label (the requested function
+  // API version) used for logs and the eval cache file name.
+  "ai-decide": "v1.0",
 }
 
 export type BackendConfig =
@@ -40,7 +48,7 @@ export type BackendConfig =
       apiKeyEnv: string
     }
   | {
-      provider: "databricks"
+      provider: "databricks" | "ai-decide"
       url: string
       model: string
       host?: string
@@ -84,7 +92,7 @@ export function detectProvider(
   env: Record<string, string | undefined>,
 ): Provider | undefined {
   const explicit = str(opts.provider ?? env.AUTO_JEV_PROVIDER)
-  if (explicit === "systemone" || explicit === "databricks") return explicit
+  if (explicit === "systemone" || explicit === "databricks" || explicit === "ai-decide") return explicit
 
   // Explicit install-time options are the strongest signal: a profile or host
   // baked into opencode.json means "this install uses databricks", even if the
@@ -123,15 +131,17 @@ export function resolveBackend(
     }
   }
 
-  // databricks
+  // databricks-style backends (ai-gateway, ai-decide) share host/profile/url
+  // resolution and auth; they differ only in the fixed path and default model.
+  // ai-decide reaches this branch only when explicitly named (detectProvider).
   const host = str(opts.host ?? env.DATABRICKS_HOST)
   const profile = str(opts.profile ?? env.DATABRICKS_CONFIG_PROFILE)
-  const model = modelOpt ?? DEFAULT_MODELS.databricks
+  const model = modelOpt ?? DEFAULT_MODELS[provider]
   if (urlOverride) {
     return { backend: { provider, url: urlOverride, model, host, profile } }
   }
   if (host) {
-    return { backend: { provider, url: host.replace(/\/+$/, "") + DEFAULT_URLS.databricks, model, host, profile } }
+    return { backend: { provider, url: host.replace(/\/+$/, "") + DEFAULT_URLS[provider], model, host, profile } }
   }
   // Host resolved later from the CLI profile (backend.resolveDatabricksHost).
   if (profile) {

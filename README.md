@@ -145,17 +145,19 @@ global), so a stale project entry silently shadows your global options.
 
 ## Bring your own backend
 
-The classifier talks to any **SystemOne-compatible** endpoint. Pick one of two
-backends; the plugin auto-detects which one you mean from what you configure.
+The classifier talks to any **SystemOne-compatible** endpoint. Pick one of
+three backends; the plugin auto-detects the first two from what you configure
+(**ai-decide** is explicit opt-in only).
 
-| | **Native TypeSafe SystemOne** | **Databricks AI Gateway** |
-|-|-|-|
-| Endpoint | `https://api.typesafe.ai/v1/systemone` | `https://<host>/ai-gateway/typesafe/v1/systemone` |
-| Auth | API key in an env var | Databricks token (OAuth profile, PAT, or `DATABRICKS_TOKEN`) |
-| Default model | `jev-latest` | `system.ai.openjev-qwen35-4b` |
+| | **Native TypeSafe SystemOne** | **Databricks AI Gateway** | **Databricks AI Decide** (beta) |
+|-|-|-|-|
+| Endpoint | `https://api.typesafe.ai/v1/systemone` | `https://<host>/ai-gateway/typesafe/v1/systemone` | `https://<host>/api/2.0/ai-functions/ai-decide` |
+| Auth | API key in an env var | Databricks token (OAuth profile, PAT, or `DATABRICKS_TOKEN`) | same as AI Gateway |
+| Default model | `jev-latest` | `system.ai.openjev-qwen35-4b` | none (function API `v1.0`; no usage stats) |
 
 **Auto-detection order** (first match wins):
-1. explicit `provider` option / `AUTO_JEV_PROVIDER`
+1. explicit `provider` option / `AUTO_JEV_PROVIDER` — the **only** way to get
+   `ai-decide`; it is never inferred from the signals below
 2. explicit `profile` or `host` plugin option → **databricks**
 3. the env var named by `apiKeyEnv` (default `TYPESAFE_API_KEY`) is set → **systemone**
 4. `DATABRICKS_TOKEN` / `DATABRICKS_HOST` / `DATABRICKS_CONFIG_PROFILE` set → **databricks**
@@ -184,6 +186,22 @@ export DATABRICKS_HOST=https://<workspace>
 export DATABRICKS_TOKEN=dapi...      # PAT or OAuth token
 just install-ug
 ```
+
+### Databricks — AI Decide (beta, explicit opt-in)
+
+```sh
+just install-ug --provider ai-decide --profile myprofile
+just whoami --provider ai-decide --profile myprofile
+```
+
+The [AI Decide function API](https://docs.databricks.com/api/ai-functions/v1/ai-decide)
+uses the same host/profile/token resolution as the AI Gateway backend; only
+the endpoint path and wire shape differ (the client translates its
+`response.answers` / `probability` shape to the SystemOne one). Caveats: it
+is a **beta** API with no model selection and no token-usage reporting, and
+its answers come from a different model than OpenJev — re-run the eval
+against it before trusting the gates, since the shipped thresholds were tuned
+on OpenJev (see [Eval](#eval)).
 
 ### Override the endpoint entirely
 
@@ -218,12 +236,12 @@ deliberate install.
 | `dryRun` | `AUTO_JEV_DRY_RUN` | `false` | log decisions without acting |
 | `runProfile` | `AUTO_JEV_PROFILE` | `unattended` | `interactive` / `unattended` |
 | `mode` | | `allow-ask-deny` | `allow-ask-deny` / `allow-ask` / `allow-deny` |
-| `provider` | `AUTO_JEV_PROVIDER` | auto | `systemone` / `databricks` |
+| `provider` | `AUTO_JEV_PROVIDER` | auto | `systemone` / `databricks` / `ai-decide` |
 | `url` | `AUTO_JEV_URL` | per-provider | full endpoint URL; overrides host/path |
 | `apiKeyEnv` | | `TYPESAFE_API_KEY` | name of the env var holding the TypeSafe key |
 | `host` | `DATABRICKS_HOST` | from profile | databricks workspace host |
 | `profile` | `DATABRICKS_CONFIG_PROFILE` | | databricks CLI profile |
-| `model` | `AUTO_JEV_MODEL` | `jev-latest` / `system.ai.openjev-qwen35-4b` | classifier model |
+| `model` | `AUTO_JEV_MODEL` | `jev-latest` / `system.ai.openjev-qwen35-4b` | classifier model (ignored by `ai-decide`, which has no model selection) |
 | `contextMessages` | | `3` | recent user messages used as goal |
 | `timeoutMs` | | `3000` | SystemOne timeout |
 | `maxConsecutiveBlocks` | | `2` | circuit breaker: blocks in a row before pausing |
@@ -264,13 +282,15 @@ bun run eval/run.ts --verbose                          # live, writes cache (aut
 bun run eval/run.ts --cached --verbose                 # offline replay
 bun run eval/run.ts --provider databricks --profile X  # force a backend
 bun run eval/run.ts --provider systemone --model jev-latest
+bun run eval/run.ts --provider ai-decide --profile X   # AI Decide beta
 bun run eval/sweep.ts                                  # grid search over cache
 ```
 
-Current corpus results (68 cases, databricks OpenJev, stable across runs):
-`accuracy = 67/68 (98.5%)`, `block/deny -> allow = 0`. The single mismatch is
+Current corpus results (75 cases, identical on both backends):
+`accuracy = 74/75 (98.7%)`, `block/deny -> allow = 0`. The single mismatch is
 fail-safe (an upload to an external service is blocked rather than paused).
-Thresholds were tuned against OpenJev on Databricks; run the eval against
+The unattended irrev gate (0.55) and the `irreversible` question wording were
+tuned jointly against the OpenJev and ai-decide caches; run the eval against
 `--provider systemone` before trusting the gates on the native model.
 
 ## Layout

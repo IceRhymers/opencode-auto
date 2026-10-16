@@ -7,12 +7,12 @@
 import type { $ } from "bun"
 import { createAuth, type Auth, type AuthSource } from "./auth.js"
 import { createSystemOne, type SystemOne } from "./systemone.js"
-import { DEFAULT_URLS, type BackendConfig } from "./config.js"
+import { DEFAULT_URLS, type BackendConfig, type Provider } from "./config.js"
 
 type BunShell = typeof $
 
 export type Backend = {
-  provider: "systemone" | "databricks"
+  provider: Provider
   url: string
   model: string
   auth: Auth
@@ -56,13 +56,17 @@ async function resolveDatabricksHost(profile: string | undefined, $: BunShell): 
   return undefined
 }
 
-function databricksAuthSource(cfg: Extract<BackendConfig, { provider: "databricks" }>): AuthSource {
+function databricksAuthSource(cfg: { host?: string; profile?: string }): AuthSource {
   // A user-exported token wins: it's the explicit "bring your own key" path.
   if (process.env.DATABRICKS_TOKEN) return { kind: "databricksToken" }
   return { kind: "cliProfile", profile: cfg.profile, host: cfg.host }
 }
 
-export async function createBackend(cfg: BackendConfig, $: BunShell): Promise<Backend> {
+export async function createBackend(
+  cfg: BackendConfig,
+  $: BunShell,
+  opts?: { timeoutMs?: number },
+): Promise<Backend> {
   if (cfg.provider === "systemone") {
     const auth = createAuth({ kind: "apiKeyEnv", envName: cfg.apiKeyEnv }, $)
     return {
@@ -70,12 +74,13 @@ export async function createBackend(cfg: BackendConfig, $: BunShell): Promise<Ba
       url: cfg.url,
       model: cfg.model,
       auth,
-      client: createSystemOne({ url: cfg.url, model: cfg.model }, () => auth.token()),
+      client: createSystemOne({ url: cfg.url, model: cfg.model, timeoutMs: opts?.timeoutMs }, () => auth.token()),
     }
   }
 
-  // databricks: a url override wins; else host + gateway path; else resolve
-  // the host from the CLI profile.
+  // databricks-style (ai-gateway + ai-decide): a url override wins; else
+  // host + the provider's fixed path; else resolve the host from the CLI
+  // profile.
   let url = cfg.url
   if (!url) {
     const host = cfg.host ?? (await resolveDatabricksHost(cfg.profile, $))
@@ -85,14 +90,22 @@ export async function createBackend(cfg: BackendConfig, $: BunShell): Promise<Ba
           "set the host/url plugin option or DATABRICKS_HOST",
       )
     }
-    url = host.replace(/\/+$/, "") + DEFAULT_URLS.databricks
+    url = host.replace(/\/+$/, "") + DEFAULT_URLS[cfg.provider]
   }
   const auth = createAuth(databricksAuthSource(cfg), $)
   return {
-    provider: "databricks",
+    provider: cfg.provider,
     url,
     model: cfg.model,
     auth,
-    client: createSystemOne({ url, model: cfg.model }, () => auth.token()),
+    client: createSystemOne(
+      {
+        url,
+        model: cfg.model,
+        wire: cfg.provider === "ai-decide" ? "ai-decide" : "systemone",
+        timeoutMs: opts?.timeoutMs,
+      },
+      () => auth.token(),
+    ),
   }
 }
