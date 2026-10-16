@@ -75,6 +75,30 @@ mutation — your file is never rewritten. Commands that target the classifier
 itself (its source tree, install config, audit log) are hard-denied
 statically.
 
+### Toggle and indicator
+
+Press **`ctrl+x p`** (`<leader>p`) in the TUI to switch auto mode on or off.
+The command is also listed in the command palette (`ctrl+p`) as **Toggle
+auto mode**. The prompt footer shows the current state:
+
+| State | Footer |
+| - | - |
+| on | `⏵⏵ auto · unattended` (plus `· dry-run` when set) |
+| off | `auto off`: every permission uses OpenCode's normal prompts |
+| no backend | `auto unavailable`: toggling shows the reason in a toast |
+
+The toggle is saved in plugin storage, so it survives restarts and the last
+choice wins over the `enabled` option, which only sets the starting value.
+Every open TUI follows the change. **Headless `opencode run` uses the last
+saved state too**, so turn it back on before an unattended run if you
+switched it off. Each toggle is logged and written to the audit log.
+
+Change the key with the `toggleKey` plugin option, e.g.
+`"options": { "toggleKey": "ctrl+alt+a" }`.
+
+The toggle lives in the server plugin and the TUI talks to it over the
+plugin RPC in `src/rpc.ts` (`status`, `set`, and a `changed` event).
+
 ### Headless `opencode run`
 
 The evaluate hook runs inline and is awaited, so auto-allow and auto-block
@@ -232,7 +256,8 @@ deliberate install.
 
 | Option | Env | Default | Description |
 | - | - | - | - |
-| `enabled` | `AUTO_JEV_ENABLED` | `true` | master switch |
+| `enabled` | `AUTO_JEV_ENABLED` | `true` | starting value of the on/off toggle (a saved toggle wins) |
+| `toggleKey` | | `<leader>p` | TUI key that toggles auto mode |
 | `dryRun` | `AUTO_JEV_DRY_RUN` | `false` | log decisions without acting |
 | `runProfile` | `AUTO_JEV_PROFILE` | `unattended` | `interactive` / `unattended` |
 | `mode` | | `allow-ask-deny` | `allow-ask-deny` / `allow-ask` / `allow-deny` |
@@ -297,7 +322,12 @@ tuned jointly against the OpenJev and ai-decide caches; run the eval against
 
 ```
 index.ts            package entry shim (V2 resolves <dir>/index.*, not "main")
-src/index.ts        plugin entry (V2 setup: execute.before + permission evaluate)
+tui.ts              TUI entry shim (V2 loads <dir>/tui.* beside index.*)
+src/index.ts        plugin entry (V2 setup: execute.before + permission evaluate + RPC)
+src/tui.tsx         TUI plugin: <leader>p toggle + footer indicator
+src/rpc.ts          RPC shared by server and TUI (status, set, changed event)
+src/toggle.ts       persisted on/off state
+src/indicator.ts    footer label + toast text (pure)
 src/adapter.ts      V2 translation: action names, command capture, effect mapping
 src/config.ts       option/env resolution + backend auto-detect
 src/backend.ts      wire backend config -> url + auth + client (plugin & eval)

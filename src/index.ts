@@ -49,6 +49,8 @@ import {
   shouldClassify,
   type EvaluationLike,
 } from "./adapter.js"
+import { Auto, type AutoStatus } from "./rpc.js"
+import { createToggle } from "./toggle.js"
 
 /** Shell call inputs captured at execute.before (full command line). */
 const CALL_TTL_MS = 60_000
@@ -82,7 +84,8 @@ export default Plugin.define({
         backendErr = e instanceof Error ? e.message : String(e)
       }
     }
-    const active = cfg.enabled && backend !== undefined
+    /** A classifier backend is configured — the plugin CAN act when enabled. */
+    const available = backend !== undefined
 
     const classify = backend
       ? createClassifier({
@@ -130,9 +133,35 @@ export default Plugin.define({
       return e
     }
 
+    // Runtime on/off, flipped from the TUI (<leader>p) via the RPC below and
+    // persisted in plugin storage. Config `enabled` is only the starting
+    // default; once a value is stored it wins. Toggling clears the pair cache
+    // so a stale decision never carries across the switch.
+    const toggle = await createToggle(ctx.storage, cfg.enabled, () => pairs.clear())
+
+    const status = (): AutoStatus => ({
+      enabled: toggle.enabled(),
+      active: available,
+      runProfile: cfg.mode_profile,
+      dryRun: cfg.dryRun,
+      ...(backendErr ? { reason: backendErr } : {}),
+    })
+
+    const rpc = await ctx.rpc.register(Auto, {
+      status: async () => status(),
+      set: async (input) => {
+        const { enabled } = input as { enabled: boolean }
+        await toggle.set(enabled)
+        log("info", "auto-jev toggled", { enabled })
+        await audit({ event: "toggle", enabled })
+        await rpc.events.emit("changed", status())
+        return status()
+      },
+    })
+
     log("info", "auto-jev initialized", {
-      enabled: cfg.enabled,
-      active,
+      enabled: toggle.enabled(),
+      active: available,
       dryRun: cfg.dryRun,
       runProfile: cfg.mode_profile,
       mode: cfg.mode,
@@ -141,7 +170,7 @@ export default Plugin.define({
         : { unconfigured: backendErr }),
     })
     if (backendErr) log("warn", "auto-jev backend not configured; plugin inactive", { reason: backendErr })
-    if (active && backend) await backend.auth.warmup()
+    if (available && toggle.enabled() && backend) await backend.auth.warmup()
 
     const registrations = [
       // Capture the full command line; the permission asserts only carry the
@@ -156,7 +185,7 @@ export default Plugin.define({
       }),
 
       await ctx.permission.hook("evaluate", async (ev) => {
-        if (!active || !classify) return
+        if (!available || !toggle.enabled() || !classify) return
         if (!shouldClassify(ev.effect, ev.action, escalate)) return
 
         const callID = callIDOf(ev)
@@ -225,7 +254,7 @@ export default Plugin.define({
     ]
 
     return async () => {
-      for (const r of registrations) {
+      for (const r of [...registrations, rpc]) {
         try {
           await r.dispose()
         } catch {

@@ -8,11 +8,33 @@ import { afterEach, describe, expect, test } from "bun:test"
 import plugin from "../src/index.ts"
 
 type Hook = (ev: never) => Promise<void> | void
+type RpcHandler = (input: unknown, context: unknown) => Promise<unknown>
 
-const makeCtx = (options: Record<string, unknown>) => {
+const makeCtx = (options: Record<string, unknown>, stored: Record<string, unknown> = {}) => {
   const hooks: Record<string, Hook> = {}
+  const rpc: Record<string, RpcHandler> = {}
+  const emitted: { name: string; data: unknown }[] = []
   const ctx = {
     options,
+    storage: {
+      get: async (key: string) => stored[key],
+      set: async (key: string, value: unknown) => {
+        stored[key] = value
+      },
+    },
+    rpc: {
+      register: async (_def: unknown, handlers: Record<string, RpcHandler>) => {
+        Object.assign(rpc, handlers)
+        return {
+          dispose: async () => {},
+          events: {
+            emit: async (name: string, data: unknown) => {
+              emitted.push({ name, data })
+            },
+          },
+        }
+      },
+    },
     location: {
       directory: "/tmp/auto-jev-test",
       project: { id: "p", directory: "/tmp/auto-jev-test", canonical: "/tmp/auto-jev-test" },
@@ -33,7 +55,7 @@ const makeCtx = (options: Record<string, unknown>) => {
       },
     },
   }
-  return { ctx, hooks }
+  return { ctx, hooks, rpc, emitted, stored }
 }
 
 // A systemone backend with an unreachable URL: construction and warmup are
@@ -41,10 +63,10 @@ const makeCtx = (options: Record<string, unknown>) => {
 // active and static decisions run; the model path fails fast.
 const OPTS = { provider: "systemone", url: "http://127.0.0.1:1/systemone" }
 
-const setup = async (options: Record<string, unknown> = OPTS) => {
-  const { ctx, hooks } = makeCtx(options)
+const setup = async (options: Record<string, unknown> = OPTS, stored: Record<string, unknown> = {}) => {
+  const { ctx, hooks, rpc, emitted } = makeCtx(options, stored)
   const cleanup = await plugin.setup(ctx as never)
-  return { hooks, cleanup: typeof cleanup === "function" ? cleanup : async () => {} }
+  return { hooks, rpc, emitted, stored, cleanup: typeof cleanup === "function" ? cleanup : async () => {} }
 }
 
 const shellCall = (hooks: Record<string, Hook>, id: string, command: string) =>
@@ -161,6 +183,53 @@ describe("plugin setup (V2)", () => {
     const ev = evaluate(hooks, { source: { type: "tool", messageID: "m1", id: "c7" }, resources: ["rm -rf /"] })
     await hooks["permission:evaluate"](ev as never)
     expect(ev.effect).toBe("ask")
+  })
+
+  test("toggling off via RPC leaves evaluations untouched and notifies TUIs", async () => {
+    const { hooks, rpc, emitted, stored, cleanup } = await setup()
+    cleanups.push(cleanup)
+    const next = (await rpc.set({ enabled: false }, {})) as Record<string, unknown>
+    expect(next.enabled).toBe(false)
+    expect(next.active).toBe(true)
+    expect(stored.toggle).toEqual({ enabled: false })
+    expect(emitted).toEqual([{ name: "changed", data: next }])
+
+    await shellCall(hooks, "t1", "rm -rf /")
+    const ev = evaluate(hooks, { source: { type: "tool", messageID: "m1", id: "t1" }, resources: ["rm -rf /"] })
+    await hooks["permission:evaluate"](ev as never)
+    expect(ev.effect).toBe("ask")
+    expect(ev.message).toBeUndefined()
+
+    await rpc.set({ enabled: true }, {})
+    await shellCall(hooks, "t2", "rm -rf /")
+    const on = evaluate(hooks, { source: { type: "tool", messageID: "m1", id: "t2" }, resources: ["rm -rf /"] })
+    await hooks["permission:evaluate"](on as never)
+    expect(on.effect).toBe("deny")
+  })
+
+  test("a persisted toggle wins over config enabled", async () => {
+    const { hooks, rpc, cleanup } = await setup({ ...OPTS, enabled: true }, { toggle: { enabled: false } })
+    cleanups.push(cleanup)
+    expect(((await rpc.status({}, {})) as Record<string, unknown>).enabled).toBe(false)
+    await shellCall(hooks, "t3", "rm -rf /")
+    const ev = evaluate(hooks, { source: { type: "tool", messageID: "m1", id: "t3" }, resources: ["rm -rf /"] })
+    await hooks["permission:evaluate"](ev as never)
+    expect(ev.effect).toBe("ask")
+  })
+
+  test("status reports unavailable with a reason when no backend is configured", async () => {
+    const keys = ["TYPESAFE_API_KEY", "DATABRICKS_TOKEN", "DATABRICKS_HOST", "DATABRICKS_CONFIG_PROFILE", "AUTO_JEV_PROVIDER"]
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]))
+    for (const k of keys) delete process.env[k]
+    try {
+      const { rpc, cleanup } = await setup({})
+      cleanups.push(cleanup)
+      const s = (await rpc.status({}, {})) as Record<string, unknown>
+      expect(s.active).toBe(false)
+      expect(String(s.reason)).toContain("no classifier backend configured")
+    } finally {
+      for (const k of keys) if (saved[k] !== undefined) process.env[k] = saved[k]
+    }
   })
 
   test("classifier error degrades to pause (unattended fail-safe)", async () => {
