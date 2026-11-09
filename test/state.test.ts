@@ -14,13 +14,29 @@ describe("buildState", () => {
     expect(s.action.cwd).toBe("/repo")
   })
 
-  test("keeps only last 3 user messages, joined", () => {
+  test("joins every message it is given (context.ts picks the window)", () => {
     const s = buildState(
       { permission: "bash", metadata: {} },
-      ["one", "two", "three", "four"],
+      ["anchor task", "two", "three", "four"],
       "/repo",
     ) as { user_goal: string }
-    expect(s.user_goal).toBe("two\n---\nthree\n---\nfour")
+    expect(s.user_goal).toBe("anchor task\n---\ntwo\n---\nthree\n---\nfour")
+  })
+
+  test("call cwd, ledger, and designated destinations", () => {
+    const s = buildState(
+      { permission: "bash", metadata: { command: "ls", cwd: "/tmp/opencode/x", tool: "shell" } },
+      ["g"],
+      "/repo",
+      { created: "tables created by the agent: a.b.c", designated: ["github.com"] },
+    ) as { designated_destinations: string[]; action: Record<string, unknown> }
+    expect(s.action.cwd).toBe("/tmp/opencode/x")
+    expect(s.action.tool).toBe("bash")
+    expect(s.action.tool_name).toBe("shell")
+    expect(s.action.created_this_session).toBe("tables created by the agent: a.b.c")
+    expect(s.designated_destinations).toEqual(["github.com"])
+    // cwd is not duplicated by the metadata passthrough
+    expect(Object.keys(s.action).filter((k) => k === "cwd")).toHaveLength(1)
   })
 
   test("clips very long fields", () => {

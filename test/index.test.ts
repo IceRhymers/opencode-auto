@@ -166,6 +166,42 @@ describe("plugin setup (V2)", () => {
     expect(ev.message).toBeUndefined()
   })
 
+  test("read-only tools outside the workspace are a static allow", async () => {
+    const { hooks, cleanup } = await setup()
+    cleanups.push(cleanup)
+    const ev = evaluate(hooks, { action: "read", resources: ["/Users/x/.config/opencode/tui.json"] })
+    await hooks["permission:evaluate"](ev as never)
+    expect(ev.effect).toBe("allow")
+    const ext = evaluate(hooks, { action: "glob", resources: ["/private/var/folders/xx/T/opencode/*.png"] })
+    await hooks["permission:evaluate"](ext as never)
+    expect(ext.effect).toBe("allow")
+  })
+
+  test("read-only tools on secrets still block", async () => {
+    const { hooks, cleanup } = await setup()
+    cleanups.push(cleanup)
+    const ev = evaluate(hooks, { action: "read", resources: ["/Users/x/.aws/credentials"] })
+    await hooks["permission:evaluate"](ev as never)
+    expect(ev.effect).toBe("deny")
+    expect(String(ev.message)).toContain("auto-jev blocked")
+  })
+
+  test("read-only tools on credential configs go to the model (pause on error)", async () => {
+    const { hooks, cleanup } = await setup()
+    cleanups.push(cleanup)
+    const ev = evaluate(hooks, { action: "read", resources: ["/Users/x/.databrickscfg"] })
+    await hooks["permission:evaluate"](ev as never)
+    expect(ev.effect).toBe("ask")
+    expect(String(ev.message)).toContain("auto-jev paused: classifier error")
+  }, 15000)
+
+  test("execute.after records the call without breaking the hook", async () => {
+    const { hooks, cleanup } = await setup()
+    cleanups.push(cleanup)
+    await shellCall(hooks, "l1", "git checkout -b scratch")
+    await hooks["tool:execute.after"]({ tool: "shell", sessionID: "s1", id: "l1" } as never)
+  })
+
   test("dryRun classifies but never changes the evaluation", async () => {
     const { hooks, cleanup } = await setup({ ...OPTS, dryRun: true })
     cleanups.push(cleanup)

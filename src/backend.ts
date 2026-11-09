@@ -20,7 +20,7 @@ export type Backend = {
 }
 
 /** Best-effort: find the workspace host for a CLI profile. */
-async function resolveDatabricksHost(profile: string | undefined, $: BunShell): Promise<string | undefined> {
+export async function resolveDatabricksHost(profile: string | undefined, $: BunShell): Promise<string | undefined> {
   if (!profile) return undefined
   // `databricks auth env --profile X` prints the host the CLI would use.
   try {

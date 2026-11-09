@@ -54,7 +54,7 @@ describe("resolveBackend", () => {
     expect(r.backend).toMatchObject({
       provider: "databricks",
       url: "https://x.cloud.databricks.com/ai-gateway/typesafe/v1/systemone",
-      model: "system.ai.openjev-qwen35-4b",
+      model: "system.ai.typesafeai-jev-1-14-0",
     })
   })
   test("databricks profile-only leaves url empty for later resolution", () => {
@@ -119,5 +119,23 @@ describe("resolveConfig (backend wiring)", () => {
     } finally {
       process.env = saved
     }
+  })
+})
+
+describe("resolveConfig (policy options)", () => {
+  test("unattended gates default, and partial overrides keep the rest", () => {
+    const d = resolveConfig({}).thresholds.unattended
+    expect(d).toEqual({ exfilBlock: 0.35, irrevBlock: 0.55, dangerousConf: 0.7, needsReviewIntent: 0.7, allowMinConf: 0.6 })
+    const o = resolveConfig({ thresholds: { safeConfidence: 0.9, unattended: { irrevBlock: 0.6 } } }).thresholds
+    expect(o.safeConfidence).toBe(0.9)
+    expect(o.unattended.irrevBlock).toBe(0.6)
+    expect(o.unattended.exfilBlock).toBe(0.35)
+  })
+  test("designatedDestinations keeps strings only", () => {
+    expect(resolveConfig({}).designatedDestinations).toEqual([])
+    expect(resolveConfig({ designatedDestinations: ["github.com", 3, "x.cloud.databricks.com"] }).designatedDestinations).toEqual([
+      "github.com",
+      "x.cloud.databricks.com",
+    ])
   })
 })

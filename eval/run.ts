@@ -8,7 +8,9 @@
  * The backend is the same createBackend the plugin uses, so --provider /
  * --model / url overrides and auth resolution match production. Answers from
  * the live endpoint are cached per provider+model to eval/cache-<key>.json so
- * tuning can re-run offline (--cached) and sweep.ts can grid-search.
+ * tuning can re-run offline (--cached) and sweep.ts can grid-search. The
+ * cache is keyed by a hash of the questions: reworded questions need fresh
+ * answers, so a stale cache fails loudly instead of reusing old ones.
  *
  * Usage: bun run eval/run.ts [--verbose] [--cached] [--write-cache]
  *        [--provider systemone|databricks] [--model <name>] [--url <url>]
@@ -50,7 +52,39 @@ export function cachePathFor(provider: string, model: string): string {
 }
 const CACHE = cachePathFor(PROVIDER, MODEL)
 
+/** FNV-1a hash of the question definitions: reworded questions = new cache. */
+export function questionsHash(): string {
+  const s = JSON.stringify(QUESTIONS)
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16)
+}
+
 type CacheEntry = { name: string; answers: Record<string, Answer> }
+type CacheFile = { questionsHash: string; entries: CacheEntry[] }
+
+export async function readCache(path: string): Promise<CacheEntry[]> {
+  let raw: string
+  try {
+    raw = await Bun.file(path).text()
+  } catch {
+    throw new Error(`no cache at ${path} — run: bun run eval/run.ts --write-cache (with the right --provider/--model/--profile)`)
+  }
+  const parsed = JSON.parse(raw)
+  if (Array.isArray(parsed)) {
+    throw new Error(`cache at ${path} predates question hashing — regenerate: bun run eval/run.ts --write-cache`)
+  }
+  const file = parsed as CacheFile
+  if (file.questionsHash !== questionsHash()) {
+    throw new Error(
+      `cache at ${path} was built with different questions (hash ${file.questionsHash}, current ${questionsHash()}) — regenerate: bun run eval/run.ts --write-cache`,
+    )
+  }
+  return file.entries
+}
 
 // Lazily-created shared backend (one auth warm-up for the whole run).
 let _client: Awaited<ReturnType<typeof createBackend>>["client"] | undefined
@@ -82,7 +116,7 @@ export async function answersFor(c: Case): Promise<{ answers?: Record<string, An
 export function pipeline(c: Case, answers?: Record<string, Answer>): { d: Decision; source: string } {
   const stat = staticDecision(
     { permission: c.permission, metadata: c.command ? { command: c.command } : {} },
-    { self: { worktree: "/repo", logPath: ".opencode/auto-jev.log" } },
+    { self: { worktree: "/repo", logPath: ".opencode/auto-jev.log" }, unattended: true, cwd: "/repo" },
   )
   if (stat) return { d: stat, source: "static" }
   if (!answers) return { d: { action: "pause", reason: "no answers (error path)" }, source: "error" }
@@ -91,6 +125,7 @@ export function pipeline(c: Case, answers?: Record<string, Answer>): { d: Decisi
       unattended: true,
       permission: c.permission,
       metadata: c.command ? { command: c.command } : {},
+      cwd: "/repo",
     }),
     source: "model",
   }
@@ -99,7 +134,7 @@ export function pipeline(c: Case, answers?: Record<string, Answer>): { d: Decisi
 async function main() {
   let cache: CacheEntry[] = []
   if (USE_CACHED) {
-    cache = JSON.parse(await Bun.file(CACHE).text())
+    cache = await readCache(CACHE)
   } else {
     for (const c of CORPUS) {
       if (c.source === "static") {
@@ -116,7 +151,10 @@ async function main() {
       process.stdout.write(".")
     }
     console.log("")
-    if (WRITE_CACHE) await Bun.write(CACHE, JSON.stringify(cache, null, 2))
+    if (WRITE_CACHE) {
+      const file: CacheFile = { questionsHash: questionsHash(), entries: cache }
+      await Bun.write(CACHE, JSON.stringify(file, null, 2))
+    }
   }
   const byName = new Map(cache.map((e) => [e.name, e.answers]))
 

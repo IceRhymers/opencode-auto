@@ -14,7 +14,7 @@
 import { staticDecision, type SelfPaths } from "../src/policy.ts"
 import { DEFAULT_MODELS } from "../src/config.ts"
 import { CORPUS } from "./corpus.ts"
-import { pipeline, cachePathFor } from "./run.ts"
+import { pipeline, cachePathFor, readCache } from "./run.ts"
 import type { Answer } from "../src/systemone.ts"
 
 // positional log path = first arg that isn't --model or its value
@@ -36,7 +36,13 @@ type LogEntry = {
 }
 
 // Corpus lookup by command so replayed model-path entries reuse cached answers.
-const cache: { name: string; answers: Record<string, Answer> }[] = JSON.parse(await Bun.file(CACHE).text())
+let cache: { name: string; answers: Record<string, Answer> }[]
+try {
+  cache = await readCache(CACHE)
+} catch (e) {
+  console.error(`${e instanceof Error ? e.message : e}`)
+  process.exit(1)
+}
 const answersByName = new Map(cache.map((e) => [e.name, e.answers]))
 const corpusByCommand = new Map(CORPUS.filter((c) => c.command).map((c) => [c.command, c]))
 
@@ -64,7 +70,7 @@ const rows: string[] = []
 
 for (const e of entries) {
   const metadata = e.command ? { command: e.command } : {}
-  let stat = staticDecision({ permission: e.permission!, metadata }, { self: SELF })
+  let stat = staticDecision({ permission: e.permission!, metadata }, { self: SELF, unattended: true })
   let source = "static"
 
   if (!stat) {

@@ -17,7 +17,7 @@
  *     host/profile/env, and it has no selectable model.
  * `url` overrides the endpoint outright for any SystemOne-compatible server.
  */
-import { DEFAULT_THRESHOLDS, type Thresholds } from "./policy.js"
+import { DEFAULT_THRESHOLDS, DEFAULT_UNATTENDED_GATES, type Thresholds, type UnattendedGates } from "./policy.js"
 
 export type Profile = "interactive" | "unattended"
 
@@ -33,7 +33,7 @@ export const DEFAULT_URLS: Record<Provider, string> = {
 
 export const DEFAULT_MODELS: Record<Provider, string> = {
   systemone: "jev-latest",
-  databricks: "system.ai.openjev-qwen35-4b",
+  databricks: "system.ai.typesafeai-jev-1-14-0",
   // ai-decide has no selectable model; this is a label (the requested function
   // API version) used for logs and the eval cache file name.
   "ai-decide": "v1.0",
@@ -75,6 +75,8 @@ export type Config = {
   /** circuit breaker (unattended profile) */
   maxConsecutiveBlocks: number
   maxBlocksPerSession: number
+  /** destinations the user owns; sending data there is not exfiltration */
+  designatedDestinations: string[]
 }
 
 const num = (v: unknown, d: number) => {
@@ -163,6 +165,7 @@ export function resolveBackend(
 export function resolveConfig(opts: Record<string, unknown> = {}): Config {
   const env = process.env
   const t = (opts.thresholds ?? {}) as Partial<Thresholds>
+  const u = (t.unattended ?? {}) as Partial<UnattendedGates>
   const runProfile = (env.AUTO_JEV_PROFILE ?? opts.runProfile) as Profile | undefined
   const { backend, unconfigured } = resolveBackend(opts, env)
   return {
@@ -180,6 +183,13 @@ export function resolveConfig(opts: Record<string, unknown> = {}): Config {
       intentMin: num(t.intentMin, DEFAULT_THRESHOLDS.intentMin),
       dangerousConfidence: num(t.dangerousConfidence, DEFAULT_THRESHOLDS.dangerousConfidence),
       exfiltrationMax: num(t.exfiltrationMax, DEFAULT_THRESHOLDS.exfiltrationMax),
+      unattended: {
+        exfilBlock: num(u.exfilBlock, DEFAULT_UNATTENDED_GATES.exfilBlock),
+        irrevBlock: num(u.irrevBlock, DEFAULT_UNATTENDED_GATES.irrevBlock),
+        dangerousConf: num(u.dangerousConf, DEFAULT_UNATTENDED_GATES.dangerousConf),
+        needsReviewIntent: num(u.needsReviewIntent, DEFAULT_UNATTENDED_GATES.needsReviewIntent),
+        allowMinConf: num(u.allowMinConf, DEFAULT_UNATTENDED_GATES.allowMinConf),
+      },
     },
     escalate: Array.isArray(opts.escalate)
       ? (opts.escalate as string[])
@@ -187,5 +197,8 @@ export function resolveConfig(opts: Record<string, unknown> = {}): Config {
     logPath: (opts.logPath as string) ?? ".opencode/auto-jev.log",
     maxConsecutiveBlocks: num(opts.maxConsecutiveBlocks, 2),
     maxBlocksPerSession: num(opts.maxBlocksPerSession, 4),
+    designatedDestinations: Array.isArray(opts.designatedDestinations)
+      ? (opts.designatedDestinations as unknown[]).filter((d): d is string => typeof d === "string")
+      : [],
   }
 }

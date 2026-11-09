@@ -36,11 +36,15 @@
  */
 import { Plugin } from "@opencode/plugin"
 import { $ } from "bun"
+import { appendFile, mkdir } from "node:fs/promises"
+import { dirname } from "node:path"
 import { resolveConfig } from "./config.js"
-import { createBackend, type Backend } from "./backend.js"
+import { createBackend, resolveDatabricksHost, type Backend } from "./backend.js"
 import { createClassifier, type ClassifyResult } from "./classifier.js"
 import { createBreaker } from "./breaker.js"
 import { recentUserMessages, type MessagesClient } from "./context.js"
+import { createLedger, type Ledger } from "./ledger.js"
+import { READ_ONLY_TOOLS, SECRET_READ, SECRET_READ_BLOCK, VAULT_READ, tmpdirPrefixes } from "./policy.js"
 import {
   applyDecision,
   callIDOf,
@@ -56,6 +60,17 @@ import { createToggle } from "./toggle.js"
 const CALL_TTL_MS = 60_000
 /** Decisions shared between the two asserts of one shell call. */
 const PAIR_TTL_MS = 15_000
+
+/** Host part of a git remote URL (https://host/... or git@host:path). */
+function hostOf(remote: string): string | undefined {
+  const ssh = remote.match(/^[^@\s]+@([^:\s]+):/)
+  if (ssh) return ssh[1]
+  try {
+    return new URL(remote).hostname || undefined
+  } catch {
+    return undefined
+  }
+}
 
 export default Plugin.define({
   id: "opencode-auto",
@@ -87,6 +102,51 @@ export default Plugin.define({
     /** A classifier backend is configured — the plugin CAN act when enabled. */
     const available = backend !== undefined
 
+    // Destinations the user owns: sending data there is not exfiltration.
+    // git remotes, the workspace host behind the configured databricks
+    // profile, the host in databricks.yml, plus the config list.
+    const designated = await (async (): Promise<string[]> => {
+      const out = new Set<string>(cfg.designatedDestinations)
+      try {
+        const res = await $`git -C ${worktree} remote -v`.quiet().nothrow()
+        if (res.exitCode === 0) {
+          for (const line of res.stdout.toString().split("\n")) {
+            const remote = line.split(/\s+/)[1]
+            const host = remote ? hostOf(remote) : undefined
+            if (host) out.add(host)
+          }
+        }
+      } catch {
+        // no git repo — fine
+      }
+      try {
+        const yml = await Bun.file(`${worktree}/databricks.yml`).text()
+        const m = yml.match(/^\s*host:\s*(\S+)/m)
+        if (m) out.add(m[1])
+      } catch {
+        // no databricks.yml — fine
+      }
+      if (cfg.backend && "profile" in cfg.backend) {
+        const host = await resolveDatabricksHost(cfg.backend.profile, $)
+        if (host) out.add(host)
+      }
+      if (cfg.backend && "host" in cfg.backend && cfg.backend.host) out.add(cfg.backend.host)
+      return [...out]
+    })()
+
+    // Per-session ledger of resources the agent created (scratch tables,
+    // branches, temp files), so "drop the table I just made" reads as cleanup.
+    const tmpDirs = tmpdirPrefixes()
+    const ledgers = new Map<string, Ledger>()
+    const ledgerFor = (sessionID: string): Ledger => {
+      let l = ledgers.get(sessionID)
+      if (!l) {
+        l = createLedger(tmpDirs)
+        ledgers.set(sessionID, l)
+      }
+      return l
+    }
+
     const classify = backend
       ? createClassifier({
           systemone: backend.client,
@@ -94,6 +154,8 @@ export default Plugin.define({
           getUserMessages: (sessionID) =>
             recentUserMessages(ctx.session as unknown as MessagesClient, sessionID, cfg.contextMessages),
           worktree,
+          designated: () => designated,
+          created: (sessionID) => ledgers.get(sessionID)?.summary(),
         })
       : undefined
     const breaker = createBreaker({
@@ -103,18 +165,20 @@ export default Plugin.define({
     /** Escalated actions are classified even when V2 resolved "allow". */
     const escalate = new Set(cfg.escalate.map(canonicalAction))
 
+    const logFile = `${worktree}/${cfg.logPath}`
+    let logDirReady: Promise<unknown> | undefined
     const audit = async (line: Record<string, unknown>) => {
       try {
-        const file = Bun.file(`${worktree}/${cfg.logPath}`)
-        const prev = (await file.exists()) ? await file.text() : ""
-        await Bun.write(file, prev + JSON.stringify({ t: Date.now(), ...line }) + "\n")
+        logDirReady ??= mkdir(dirname(logFile), { recursive: true }).catch(() => {})
+        await logDirReady
+        await appendFile(logFile, JSON.stringify({ t: Date.now(), ...line }) + "\n")
       } catch {
         // ignore
       }
     }
 
     /** Full shell command lines by tool call id (from execute.before). */
-    const calls = new Map<string, { command?: string; t: number }>()
+    const calls = new Map<string, { command?: string; workdir?: string; tool?: string; t: number }>()
     /** Final decisions by tool call id, shared by a shell call's asserts. */
     const pairs = new Map<string, { action: string; reason: string; t: number }>()
 
@@ -173,14 +237,21 @@ export default Plugin.define({
     if (available && toggle.enabled() && backend) await backend.auth.warmup()
 
     const registrations = [
-      // Capture the full command line; the permission asserts only carry the
-      // scanner's sub-command resources, which lose quoting and pipes.
+      // Capture the full command line, working directory, and tool name; the
+      // permission asserts only carry the scanner's sub-command resources,
+      // which lose quoting and pipes.
       await ctx.tool.hook("execute.before", (ev) => {
-        const input = ev.input as { command?: unknown } | undefined
-        calls.set(ev.id, { command: typeof input?.command === "string" ? input.command : undefined, t: Date.now() })
+        const input = ev.input as { command?: unknown; workdir?: unknown } | undefined
+        calls.set(ev.id, {
+          command: typeof input?.command === "string" ? input.command : undefined,
+          workdir: typeof input?.workdir === "string" ? input.workdir : undefined,
+          tool: ev.tool,
+          t: Date.now(),
+        })
         if (calls.size > 200) sweep(calls, CALL_TTL_MS)
       }),
       await ctx.tool.hook("execute.after", (ev) => {
+        ledgerFor(ev.sessionID).record(calls.get(ev.id)?.command)
         calls.delete(ev.id)
       }),
 
@@ -199,14 +270,35 @@ export default Plugin.define({
         if (paired) {
           result = { action: paired.action, reason: `paired decision: ${paired.reason}`, source: "static" } as ClassifyResult
         } else {
-          usedCommand = callID ? calls.get(callID)?.command : undefined
+          const info = callID ? calls.get(callID) : undefined
+          usedCommand = info?.command
           if (usedCommand === undefined && action === "bash") {
             // Fallback without execute.before data: the scanner's resources.
             // Quoting/pipes are lost, weakening the static rules.
             const joined = ev.resources.join("; ").trim()
             if (joined) usedCommand = joined
           }
-          result = await classify({ sessionID: ev.sessionID, ...evaluationToPermission(ev, usedCommand) })
+          if (usedCommand === undefined && READ_ONLY_TOOLS.has(action)) {
+            // read/glob/grep/list carry paths, not a command: judge the paths
+            // directly. Secrets still block; credential configs stay with the
+            // model (pause); everything else is a static allow.
+            const text = ev.resources.join(" ")
+            if (SECRET_READ.some((re) => re.test(text))) {
+              result = unattended
+                ? { action: "block", reason: SECRET_READ_BLOCK, source: "static" }
+                : { action: "ask", reason: "reads secrets or credentials; confirm exposure", source: "static" }
+            } else if (VAULT_READ.some((re) => re.test(text))) {
+              result = await classify({ sessionID: ev.sessionID, ...evaluationToPermission(ev) })
+            } else {
+              result = { action: "allow", reason: "read-only tool", source: "static" }
+            }
+          } else {
+            const p = evaluationToPermission(ev, usedCommand)
+            const meta = (p.metadata ??= {})
+            if (info?.workdir) meta.cwd = info.workdir
+            if (info?.tool) meta.tool = info.tool
+            result = await classify({ sessionID: ev.sessionID, ...p })
+          }
         }
 
         // Circuit breaker: in unattended mode a session that keeps getting
@@ -237,6 +329,7 @@ export default Plugin.define({
           command: usedCommand,
           patterns: ev.resources,
           ...final,
+          ...(final.answers ? { answers: final.answers } : {}),
           ...(final !== result ? { escalatedFrom: result.action } : {}),
         })
         log(final.action === "deny" || final.action === "block" ? "warn" : "info", `auto-jev ${final.action}`, {
